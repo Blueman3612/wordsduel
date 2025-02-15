@@ -2,29 +2,79 @@
 
 import { useState } from 'react'
 import { useGameStore } from '@/lib/store/gameStore'
-import { GameParameter, Player } from '@/types/game'
+import { Player } from '@/types/game'
 
 export function GameGrid() {
   const [inputWord, setInputWord] = useState('')
+  const [isValidating, setIsValidating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  
   const {
     currentParameter,
     currentPlayer,
     usedWords,
-    timeLimit,
     addUsedWord,
     setCurrentPlayer,
-    players
+    players,
+    setWinner
   } = useGameStore()
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const validateAndSubmitWord = async (word: string) => {
+    setIsValidating(true)
+    setError(null)
+    
+    try {
+      const response = await fetch('/api/validate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          word,
+          parameter: currentParameter
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to validate word')
+      }
+
+      if (!data.isValid) {
+        setError('Invalid word for the current parameter')
+        setWinner(players.find(p => p.id !== currentPlayer)?.id || '')
+        return false
+      }
+
+      return true
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    } catch (error) {
+      setError('Failed to validate word')
+      return false
+    } finally {
+      setIsValidating(false)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (inputWord.trim() && !usedWords.includes(inputWord.toLowerCase())) {
+    
+    if (!inputWord.trim() || usedWords.includes(inputWord.toLowerCase())) {
+      setError('Word already used or empty')
+      return
+    }
+
+    const isValid = await validateAndSubmitWord(inputWord.trim())
+    
+    if (isValid) {
       addUsedWord(inputWord.toLowerCase())
       // Switch to next player
       const currentPlayerIndex = players.findIndex((p: Player) => p.id === currentPlayer)
       const nextPlayerIndex = (currentPlayerIndex + 1) % players.length
       setCurrentPlayer(players[nextPlayerIndex].id)
       setInputWord('')
+      setError(null)
     }
   }
 
@@ -42,20 +92,27 @@ export function GameGrid() {
       </div>
 
       <form onSubmit={handleSubmit} className="mb-8">
-        <div className="flex gap-4">
-          <input
-            type="text"
-            value={inputWord}
-            onChange={(e) => setInputWord(e.target.value)}
-            className="flex-1 px-4 py-2 border rounded-lg"
-            placeholder="Type your word..."
-          />
-          <button
-            type="submit"
-            className="px-6 py-2 bg-primary text-white rounded-lg"
-          >
-            Submit
-          </button>
+        <div className="flex flex-col gap-4">
+          <div className="flex gap-4">
+            <input
+              type="text"
+              value={inputWord}
+              onChange={(e) => setInputWord(e.target.value)}
+              className="flex-1 px-4 py-2 border rounded-lg"
+              placeholder="Type your word..."
+              disabled={isValidating}
+            />
+            <button
+              type="submit"
+              className="px-6 py-2 bg-primary text-white rounded-lg disabled:opacity-50"
+              disabled={isValidating}
+            >
+              {isValidating ? 'Checking...' : 'Submit'}
+            </button>
+          </div>
+          {error && (
+            <p className="text-red-500 text-sm">{error}</p>
+          )}
         </div>
       </form>
 

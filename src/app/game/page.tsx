@@ -5,7 +5,7 @@ import { GameGrid } from '@/components/game/GameGrid'
 import { useGameStore } from '@/lib/store/gameStore'
 
 export default function GamePage() {
-  const { status, resetGame } = useGameStore()
+  const { resetGame } = useGameStore()
 
   useEffect(() => {
     // Initialize a new game when the component mounts
