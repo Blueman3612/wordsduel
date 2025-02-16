@@ -81,6 +81,44 @@ export async function analyzeWord(word: string, partOfSpeech: string, definition
           reason: `Not singular (singular form is "${singular}")`
         }
       }
+
+      // Additional checks for plural forms
+      if (word.endsWith('s')) {
+        // Exception for words that naturally end in 's' like 'glass'
+        const EXCEPTIONS = ['glass', 'class', 'brass', 'chess', 'cross', 'dress', 'floss', 'gloss', 'grass', 'press']
+        if (!EXCEPTIONS.includes(word)) {
+          // Check if removing 's' creates a valid word
+          const withoutS = word.slice(0, -1)
+          if (spell.correct(withoutS)) {
+            return {
+              isValid: false,
+              reason: `🔍 Likely plural (removing 's' creates valid word "${withoutS}")`
+            }
+          }
+        }
+      }
+
+      // Check for 'es' ending
+      if (word.endsWith('es')) {
+        const withoutEs = word.slice(0, -2)
+        if (spell.correct(withoutEs)) {
+          return {
+            isValid: false,
+            reason: `🔍 Likely plural (removing 'es' creates valid word "${withoutEs}")`
+          }
+        }
+      }
+
+      // Check for 'ies' ending
+      if (word.endsWith('ies')) {
+        const withY = word.slice(0, -3) + 'y'
+        if (spell.correct(withY)) {
+          return {
+            isValid: false,
+            reason: `🔍 Likely plural (replacing 'ies' with 'y' creates valid word "${withY}")`
+          }
+        }
+      }
       
       // Trust the API's part of speech if compromise fails
       if (!doc.nouns().length) {

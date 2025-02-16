@@ -8,8 +8,9 @@ WordsDuel is a real-time multiplayer word game where players take turns typing w
 2. Initial parameter is given (e.g., "Noun")
 3. Players alternate turns:
    - Player types a word matching the parameter
-   - Word is validated
-   - Word is added to "used words" list
+   - Word is validated against dictionary and parameters
+   - Word is checked for uniqueness against used words
+   - Valid word is added to "used words" list
 4. Parameters become progressively harder (e.g., "Includes letter X")
 5. Game continues until a player fails to provide a valid word in time
 
@@ -22,13 +23,141 @@ src/
 │   └── auth/          # Authentication pages
 ├── components/
 │   ├── game/          # Game-specific components
-│   └── ui/            # Reusable UI components
+│   └── ui/            # Reusable UI components (Button, Input, Card)
 ├── lib/
 │   ├── supabase/      # Supabase client and utilities
-│   ├── utils/         # Helper functions
+│   ├── utils/         # Helper functions and word processing
 │   └── store/         # Zustand store configurations
 └── types/             # TypeScript type definitions
 ```
+
+## Word Processing System
+### Word Validation
+- Dictionary validation using Dictionary API
+- Part of speech validation (nouns, verbs, adjectives, adverbs)
+- Word form validation:
+  - Nouns: Must be singular form
+  - Verbs: Must be infinitive form
+  - Adjectives: Must be base form (no comparative/superlative)
+  - Proper nouns are excluded
+
+### Word Filtering
+- Removes initialisms, acronyms, and abbreviations
+- Filters out plural forms:
+  - Words ending in 's' (with exceptions like 'glass', 'bass')
+  - Words ending in 'es' or 'ies'
+  - Validates against dictionary to catch irregular plurals
+- Removes conjugated verbs:
+  - Past tense (-ed)
+  - Progressive (-ing)
+  - Third person singular (-s, -es)
+- Excludes modified adjectives:
+  - Comparative (-er)
+  - Superlative (-est)
+
+## State Management (Zustand)
+### Game State:
+```typescript
+{
+  id: string
+  status: 'waiting' | 'playing' | 'finished'
+  players: Player[]
+  currentPlayer: string
+  currentParameter: {
+    type: 'noun' | 'verb' | 'adjective' | 'includes' | 'starts_with' | 'ends_with'
+    value?: string
+    difficulty: number
+  }
+  usedWords: string[]
+  timeLimit: number
+  winner?: string
+}
+```
+
+## API Endpoints
+### `/api/validate`
+Validates words against:
+- Dictionary existence
+- Parameter matching
+- Word form requirements
+- Previous usage
+
+### `/api/game/start`
+- Initializes new game session
+- Sets initial parameter
+- Assigns player order
+
+### `/api/game/move`
+- Processes player moves
+- Updates game state
+- Triggers parameter progression
+
+## Database Schema
+### Games
+```sql
+games (
+  id: uuid primary key
+  created_at: timestamp
+  status: enum
+  current_parameter: jsonb
+  current_player: uuid
+  winner: uuid nullable
+  time_limit: integer
+  used_words: text[]
+)
+```
+
+### Players
+```sql
+players (
+  id: uuid primary key
+  username: text
+  email: text
+  stats: jsonb
+)
+```
+
+## Development Setup
+1. Clone repository
+2. Install dependencies: `npm install`
+3. Set up environment variables:
+   ```
+   NEXT_PUBLIC_SUPABASE_URL=your-project-url
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+   ```
+4. Run development server: `npm run dev`
+5. Access at `http://localhost:3000`
+
+## Word Seeding
+Run `npm run seed-words` to populate the database with validated words:
+- Processes words from dictionary source
+- Applies validation rules
+- Stores in Supabase with part of speech and definitions
+- Tracks word relationships (synonyms, antonyms)
+- Excludes invalid forms (plurals, conjugations, etc.)
+
+## Deployment Instructions
+1. Set up Supabase project
+   - Create new project
+   - Run database migrations
+   - Configure authentication
+
+2. Environment Setup
+   ```
+   NEXT_PUBLIC_SUPABASE_URL=your-project-url
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+   ```
+
+3. Build and Deploy
+   ```bash
+   npm run build
+   npm run start
+   ```
+
+4. Vercel Deployment
+   - Connect repository
+   - Configure environment variables
+   - Deploy
 
 ## Component Hierarchy
 - Layout

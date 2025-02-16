@@ -2,7 +2,7 @@ import 'dotenv/config'
 import { batchFetchWords } from '../src/lib/utils/word-fetcher'
 import { getTestWords } from '../src/lib/utils/word-list'
 
-const LETTER = 'a' // Change this to process different letters
+const LETTER = 'c' // Change this to process different letters
 console.log(`Starting word seeding process for words beginning with '${LETTER}'...`)
 
 const testWords = getTestWords(LETTER)

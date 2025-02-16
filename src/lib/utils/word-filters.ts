@@ -5,18 +5,26 @@ const VERB_CONJUGATIONS = ['ing', 'ed', 's', 'es']
 // Common adjective modifications
 const ADJECTIVE_MODIFICATIONS = ['er', 'est']
 
+// Import spell checker
+import nspell from 'nspell'
+import dictionary from 'dictionary-en'
+
+let spellChecker: any = null
+
+const getSpellChecker = async () => {
+  if (spellChecker) return spellChecker
+  spellChecker = nspell(dictionary)
+  return spellChecker
+}
+
 export function isSingular(word: string): boolean {
   // Check common plural endings
   if (word.endsWith('s')) {
-    // Exception for words that naturally end in 's' like 'glass'
-    const EXCEPTIONS = ['glass', 'bass', 'mass', 'pass', 'class']
-    if (EXCEPTIONS.includes(word)) return true
-
-    // Check if removing 's' creates a valid word ending
-    const singular = word.slice(0, -1)
     // Words ending in 'ss' are usually singular
     if (word.endsWith('ss')) return true
+    
     // If removing 's' creates a word ending in 'i', it's likely plural (e.g., 'fungi')
+    const singular = word.slice(0, -1)
     if (singular.endsWith('i')) return false
   }
 

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { Send } from 'lucide-react'
 
 export default function GamePage() {
   const [word, setWord] = useState('')
@@ -20,9 +21,13 @@ export default function GamePage() {
               />
               <button
                 type="submit"
-                className="px-8 py-4 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white rounded-xl font-semibold shadow-lg transition-all duration-300"
+                className="p-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl shadow-lg transition-all duration-200 
+                hover:shadow-xl hover:scale-105 hover:from-purple-600 hover:to-pink-600 
+                active:scale-95 active:shadow-md active:translate-y-0.5
+                disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-lg disabled:hover:translate-y-0"
+                aria-label="Submit word"
               >
-                Submit
+                <Send className="w-6 h-6" />
               </button>
             </form>
           </div>

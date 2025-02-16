@@ -15,7 +15,7 @@ export function getTestWords(startingLetter: string): string[] {
       .map(word => word.trim())
       .filter(word => 
         word && // not empty
-        word.length > 1 && // exclude 1-letter words
+        word.length >= 5 && // minimum 5 letters
         !word.includes('-') && // no hyphens
         !word.includes(' ') && // no spaces (phrases)
         /^[a-zA-Z]+$/.test(word) && // only letters
