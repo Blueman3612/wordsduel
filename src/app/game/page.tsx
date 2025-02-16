@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Send, X } from 'lucide-react'
+import { Send, X, Flag } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { supabase } from '@/lib/supabase/client'
+import { ReportModal } from '@/components/game/ReportModal'
 
 interface WordCard {
   word: string
@@ -31,6 +32,7 @@ export default function GamePage() {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
   const [error, setError] = useState<string | null>(null)
+  const [reportWord, setReportWord] = useState<string | null>(null)
 
   // Auto-scroll to bottom when words change
   useEffect(() => {
@@ -138,6 +140,13 @@ export default function GamePage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800">
+      {/* Report Modal */}
+      <ReportModal
+        isOpen={!!reportWord}
+        onClose={() => setReportWord(null)}
+        word={reportWord || ''}
+      />
+
       <div className="h-screen flex">
         {/* Sidebar - Fixed */}
         <aside className="w-80 border-r border-white/10 p-6 flex flex-col relative">
@@ -269,7 +278,7 @@ export default function GamePage() {
                     {!wordCard.isInvalid && (
                       <div 
                         className={`
-                          absolute top-0 z-50
+                          absolute top-0 z-[100]
                           bg-white/20 backdrop-blur-xl rounded-2xl p-4 shadow-lg
                           transition-[width,opacity,grid-template-rows]
                           duration-150
@@ -291,6 +300,14 @@ export default function GamePage() {
                       >
                         <div className="relative z-10">
                           <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                          {/* Report Button */}
+                          <button
+                            onClick={() => setReportWord(wordCard.word)}
+                            className="absolute top-0 right-0 p-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90 transition-colors"
+                            aria-label="Report word"
+                          >
+                            <Flag className="w-4 h-4" />
+                          </button>
                         </div>
                         
                         {/* Dictionary content */}
