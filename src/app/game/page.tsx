@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Send } from 'lucide-react'
+import { Send, X } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { supabase } from '@/lib/supabase/client'
 
@@ -9,6 +9,7 @@ interface WordCard {
   word: string
   player: string
   timestamp: number
+  isInvalid?: boolean
   dictionary?: {
     partOfSpeech?: string
     definition?: string
@@ -25,15 +26,11 @@ interface Player {
 
 export default function GamePage() {
   const [word, setWord] = useState('')
-  const [words, setWords] = useState<WordCard[]>([
-    { word: 'apple', player: 'Nathan', timestamp: Date.now() - 4000 },
-    { word: 'banana', player: 'Alice', timestamp: Date.now() - 3000 },
-    { word: 'cherry', player: 'Nathan', timestamp: Date.now() - 2000 },
-    { word: 'date', player: 'Alice', timestamp: Date.now() - 1000 }
-  ])
+  const [words, setWords] = useState<WordCard[]>([])
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
+  const [error, setError] = useState<string | null>(null)
 
   // Auto-scroll to bottom when words change
   useEffect(() => {
@@ -96,16 +93,46 @@ export default function GamePage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!word.trim()) return
+    const trimmedWord = word.trim()
+    if (!trimmedWord) return
 
-    const dictionaryData = await fetchWordData(word.trim())
+    try {
+      const { data, error } = await supabase
+        .from('words')
+        .select('part_of_speech, definitions, phonetics')
+        .eq('word', trimmedWord.toLowerCase())
+
+      if (error || !data || data.length === 0) {
+        setWords(prev => [...prev, {
+          word: trimmedWord,
+          player: players[0].name,
+          timestamp: Date.now(),
+          isInvalid: true
+        }])
+      } else {
+        // Use the first entry's data (we know the word is valid if we have any entries)
+        const firstEntry = data[0]
+        setWords(prev => [...prev, {
+          word: trimmedWord,
+          player: players[0].name,
+          timestamp: Date.now(),
+          dictionary: {
+            partOfSpeech: firstEntry.part_of_speech,
+            definition: firstEntry.definitions[0],
+            phonetics: firstEntry.phonetics
+          }
+        }])
+      }
+    } catch (error) {
+      console.error('Error checking word:', error)
+      setWords(prev => [...prev, {
+        word: trimmedWord,
+        player: players[0].name,
+        timestamp: Date.now(),
+        isInvalid: true
+      }])
+    }
     
-    setWords(prev => [...prev, {
-      word: word.trim(),
-      player: players[0].name,
-      timestamp: Date.now(),
-      dictionary: dictionaryData
-    }])
     setWord('')
   }
 
@@ -220,65 +247,76 @@ export default function GamePage() {
                     <div 
                       className={`
                         relative bg-white/10 backdrop-blur-md rounded-2xl p-4 shadow-lg
-                        ${wordCard.player !== players[0].name 
-                          ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
-                          : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
+                        ${wordCard.isInvalid 
+                          ? 'border-2 border-red-500/40 shadow-[0_0_10px_-3px_rgba(239,68,68,0.3)] bg-red-500/10' 
+                          : wordCard.player !== players[0].name 
+                            ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
+                            : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
                         }
                       `}
                     >
-                      <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                      {wordCard.isInvalid ? (
+                        <div className="flex items-center gap-2">
+                          <X className="w-6 h-6 text-red-400" />
+                          <p className="text-2xl font-medium text-white/60 line-through">{wordCard.word}</p>
+                        </div>
+                      ) : (
+                        <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                      )}
                     </div>
 
                     {/* Expandable Card */}
-                    <div 
-                      className={`
-                        absolute top-0 z-50
-                        bg-white/20 backdrop-blur-xl rounded-2xl p-4 shadow-lg
-                        transition-[width,opacity,grid-template-rows] duration-200 ease-out
-                        overflow-hidden
-                        w-full
-                        grid
-                        opacity-0 pointer-events-none
-                        group-hover:opacity-100 group-hover:pointer-events-auto
-                        group-hover:w-[300px]
-                        ${expandDirection === 'left' 
-                          ? 'right-0' 
-                          : 'left-0'
-                        }
-                        ${wordCard.player !== players[0].name 
-                          ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
-                          : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
-                        }
-                        after:absolute after:inset-0 after:bg-black/20 after:rounded-2xl
-                      `}
-                    >
-                      <div className="relative z-10">
-                        <p className="text-2xl font-medium text-white">{wordCard.word}</p>
-                      </div>
-                      
-                      {/* Dictionary content */}
-                      <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-all duration-200">
-                        <div className="overflow-hidden min-w-0">
-                          <div className="flex items-center gap-3 text-sm mt-2">
-                            {wordCard.dictionary?.phonetics && (
-                              <p className="text-white/70 truncate">
-                                {wordCard.dictionary.phonetics}
-                              </p>
-                            )}
-                            {wordCard.dictionary?.partOfSpeech && (
-                              <p className="text-white/60 italic">
-                                {wordCard.dictionary.partOfSpeech}
+                    {!wordCard.isInvalid && (
+                      <div 
+                        className={`
+                          absolute top-0 z-50
+                          bg-white/20 backdrop-blur-xl rounded-2xl p-4 shadow-lg
+                          transition-[width,opacity,grid-template-rows]
+                          duration-150
+                          group-hover:duration-200
+                          ease-out
+                          overflow-hidden
+                          w-full
+                          grid
+                          opacity-0 pointer-events-none
+                          group-hover:opacity-100 group-hover:pointer-events-auto
+                          group-hover:w-[300px]
+                          ${expandDirection === 'left' ? 'right-0' : 'left-0'}
+                          ${wordCard.player !== players[0].name 
+                            ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
+                            : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
+                          }
+                          after:absolute after:inset-0 after:bg-black/20 after:rounded-2xl
+                        `}
+                      >
+                        <div className="relative z-10">
+                          <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                        </div>
+                        
+                        {/* Dictionary content */}
+                        <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-all duration-100 group-hover:duration-200">
+                          <div className="overflow-hidden min-w-0">
+                            <div className="flex items-center gap-3 text-sm mt-2">
+                              {wordCard.dictionary?.phonetics && (
+                                <p className="text-white/70 truncate">
+                                  {wordCard.dictionary.phonetics}
+                                </p>
+                              )}
+                              {wordCard.dictionary?.partOfSpeech && (
+                                <p className="text-white/60 italic">
+                                  {wordCard.dictionary.partOfSpeech}
+                                </p>
+                              )}
+                            </div>
+                            {wordCard.dictionary?.definition && (
+                              <p className="text-white/90 text-base mt-2">
+                                {wordCard.dictionary.definition}
                               </p>
                             )}
                           </div>
-                          {wordCard.dictionary?.definition && (
-                            <p className="text-white/90 text-base mt-2">
-                              {wordCard.dictionary.definition}
-                            </p>
-                          )}
                         </div>
                       </div>
-                    </div>
+                    )}
                   </div>
 
                   {index < words.length - 1 && (

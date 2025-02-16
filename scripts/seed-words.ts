@@ -3,7 +3,7 @@ import { batchFetchWords } from '../src/lib/utils/word-fetcher'
 import { getTestWords } from '../src/lib/utils/word-list'
 
 // Process words from G to Z
-const LETTERS = 'ghijklmnopqrstuvwxyz'.split('')
+const LETTERS = 'nopqrstuvwxyz'.split('')
 
 async function processLetter(letter: string) {
   console.log(`\n=== Starting word seeding process for words beginning with '${letter.toUpperCase()}' ===`)

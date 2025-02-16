@@ -1,4 +1,5 @@
 import { GameParameter } from '@/types/game'
+import { supabase } from '@/lib/supabase/client'
 
 interface DictionaryResponse {
   word: string
@@ -12,40 +13,29 @@ interface DictionaryResponse {
 
 export async function validateWord(word: string, parameter: GameParameter): Promise<boolean> {
   try {
-    const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`)
-    
-    if (!response.ok) {
-      return false // Word doesn't exist
-    }
+    // First check if word exists in Supabase
+    const { data: existingWord, error } = await supabase
+      .from('words')
+      .select('part_of_speech')
+      .eq('word', word.toLowerCase())
+      .maybeSingle()
 
-    const data: DictionaryResponse[] = await response.json()
-    
-    if (!data || data.length === 0) {
+    if (error) {
+      console.error('Error checking word in Supabase:', error)
       return false
     }
 
-    // Check if the word matches the parameter
+    // If word doesn't exist in our database, reject it
+    if (!existingWord) {
+      return false
+    }
+
+    // For part of speech parameters, check if the word has that part of speech in our database
     switch (parameter.type) {
       case 'noun':
-        return data.some(entry => 
-          entry.meanings.some(meaning => 
-            meaning.partOfSpeech === 'noun'
-          )
-        )
-      
       case 'verb':
-        return data.some(entry => 
-          entry.meanings.some(meaning => 
-            meaning.partOfSpeech === 'verb'
-          )
-        )
-      
       case 'adjective':
-        return data.some(entry => 
-          entry.meanings.some(meaning => 
-            meaning.partOfSpeech === 'adjective'
-          )
-        )
+        return existingWord.part_of_speech === parameter.type
       
       case 'includes':
         return parameter.value ? word.includes(parameter.value) : true
