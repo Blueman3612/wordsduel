@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { Send, X, Flag } from 'lucide-react'
-import { Card } from '@/components/ui/Card'
 import { supabase } from '@/lib/supabase/client'
 import { ReportModal } from '@/components/game/ReportModal'
 

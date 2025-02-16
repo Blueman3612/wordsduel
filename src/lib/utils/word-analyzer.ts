@@ -8,7 +8,7 @@ interface WordAnalysis {
   reason?: string
 }
 
-let spellChecker: any = null
+let spellChecker: ReturnType<typeof nspell> | null = null
 
 const getSpellChecker = async () => {
   if (spellChecker) return spellChecker
@@ -16,7 +16,7 @@ const getSpellChecker = async () => {
   return spellChecker
 }
 
-export async function analyzeWord(word: string, partOfSpeech: string, definition: string, phonetics: string | null): Promise<WordAnalysis> {
+export async function analyzeWord(word: string, partOfSpeech: string, definition: string): Promise<WordAnalysis> {
   // Convert word to lowercase for consistency
   word = word.toLowerCase().trim()
   

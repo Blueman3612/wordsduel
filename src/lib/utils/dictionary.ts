@@ -1,16 +1,6 @@
 import { GameParameter } from '@/types/game'
 import { supabase } from '@/lib/supabase/client'
 
-interface DictionaryResponse {
-  word: string
-  meanings: {
-    partOfSpeech: string
-    definitions: {
-      definition: string
-    }[]
-  }[]
-}
-
 export async function validateWord(word: string, parameter: GameParameter): Promise<boolean> {
   try {
     // First check if word exists in Supabase

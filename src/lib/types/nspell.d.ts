@@ -4,17 +4,12 @@ declare module 'nspell' {
     suggest: (word: string) => string[];
   }
 
-  function nspell(dictionary: any): NSpell;
+  function nspell(dictionary: { aff: Buffer; dic: Buffer }): NSpell;
   export default nspell;
 }
 
 declare module 'dictionary-en' {
-  interface Dictionary {
-    aff: Buffer;
-    dic: Buffer;
-  }
-
-  function dictionary(callback: (error: Error | null, dict?: Dictionary) => void): void;
+  const dictionary: { aff: Buffer; dic: Buffer };
   export default dictionary;
 }
 

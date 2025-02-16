@@ -9,7 +9,7 @@ const ADJECTIVE_MODIFICATIONS = ['er', 'est']
 import nspell from 'nspell'
 import dictionary from 'dictionary-en'
 
-let spellChecker: any = null
+let spellChecker: ReturnType<typeof nspell> | null = null
 
 const getSpellChecker = async () => {
   if (spellChecker) return spellChecker
