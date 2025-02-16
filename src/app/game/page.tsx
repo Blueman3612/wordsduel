@@ -3,11 +3,17 @@
 import { useState, useRef, useEffect } from 'react'
 import { Send } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { supabase } from '@/lib/supabase/client'
 
 interface WordCard {
   word: string
   player: string
   timestamp: number
+  dictionary?: {
+    partOfSpeech?: string
+    definition?: string
+    phonetics?: string
+  }
 }
 
 interface Player {
@@ -27,6 +33,7 @@ export default function GamePage() {
   ])
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
 
   // Auto-scroll to bottom when words change
   useEffect(() => {
@@ -38,6 +45,18 @@ export default function GamePage() {
       })
     }
   }, [words])
+
+  // Function to check if element is near right edge
+  const updateExpandDirection = (event: MouseEvent) => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    
+    const rect = (event.target as HTMLElement).getBoundingClientRect()
+    const containerRect = container.getBoundingClientRect()
+    const spaceOnRight = containerRect.right - rect.right
+    
+    setExpandDirection(spaceOnRight < 310 ? 'left' : 'right')
+  }
 
   // Simulated data
   const parameters = [
@@ -53,14 +72,39 @@ export default function GamePage() {
     { id: '2', name: 'Alice', elo: 1350, score: 3 }
   ]
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Fetch dictionary data from Supabase
+  const fetchWordData = async (word: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('words')
+        .select('part_of_speech, definitions, phonetics')
+        .eq('word', word.toLowerCase())
+        .single()
+
+      if (error) throw error
+
+      return data ? {
+        partOfSpeech: data.part_of_speech,
+        definition: data.definitions[0], // Using first definition for simplicity
+        phonetics: data.phonetics
+      } : undefined
+    } catch (error) {
+      console.error('Error fetching word data:', error)
+      return undefined
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!word.trim()) return
 
+    const dictionaryData = await fetchWordData(word.trim())
+    
     setWords(prev => [...prev, {
       word: word.trim(),
-      player: players[0].name, // For testing, always use first player
-      timestamp: Date.now()
+      player: players[0].name,
+      timestamp: Date.now(),
+      dictionary: dictionaryData
     }])
     setWord('')
   }
@@ -168,14 +212,75 @@ export default function GamePage() {
             <div className="flex flex-wrap items-start gap-y-4 justify-center w-full">
               {words.map((wordCard, index) => (
                 <div key={index} className="flex items-center">
-                  <div className={`bg-white/10 backdrop-blur-md rounded-2xl p-4 shadow-lg transition-all
-                    ${wordCard.player !== players[0].name 
-                      ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
-                      : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
-                    }
-                  `}>
-                    <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                  <div 
+                    className="relative group" 
+                    onMouseEnter={(e) => updateExpandDirection(e as unknown as MouseEvent)}
+                  >
+                    {/* Base Card */}
+                    <div 
+                      className={`
+                        relative bg-white/10 backdrop-blur-md rounded-2xl p-4 shadow-lg
+                        ${wordCard.player !== players[0].name 
+                          ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
+                          : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
+                        }
+                      `}
+                    >
+                      <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                    </div>
+
+                    {/* Expandable Card */}
+                    <div 
+                      className={`
+                        absolute top-0 z-50
+                        bg-white/20 backdrop-blur-xl rounded-2xl p-4 shadow-lg
+                        transition-[width,opacity,grid-template-rows] duration-200 ease-out
+                        overflow-hidden
+                        w-full
+                        grid
+                        opacity-0 pointer-events-none
+                        group-hover:opacity-100 group-hover:pointer-events-auto
+                        group-hover:w-[300px]
+                        ${expandDirection === 'left' 
+                          ? 'right-0' 
+                          : 'left-0'
+                        }
+                        ${wordCard.player !== players[0].name 
+                          ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
+                          : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
+                        }
+                        after:absolute after:inset-0 after:bg-black/20 after:rounded-2xl
+                      `}
+                    >
+                      <div className="relative z-10">
+                        <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                      </div>
+                      
+                      {/* Dictionary content */}
+                      <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-all duration-200">
+                        <div className="overflow-hidden min-w-0">
+                          <div className="flex items-center gap-3 text-sm mt-2">
+                            {wordCard.dictionary?.phonetics && (
+                              <p className="text-white/70 truncate">
+                                {wordCard.dictionary.phonetics}
+                              </p>
+                            )}
+                            {wordCard.dictionary?.partOfSpeech && (
+                              <p className="text-white/60 italic">
+                                {wordCard.dictionary.partOfSpeech}
+                              </p>
+                            )}
+                          </div>
+                          {wordCard.dictionary?.definition && (
+                            <p className="text-white/90 text-base mt-2">
+                              {wordCard.dictionary.definition}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
+
                   {index < words.length - 1 && (
                     <div className="flex items-center mx-4">
                       <div className="w-4 h-px bg-white/20" />
