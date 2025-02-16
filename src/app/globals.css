@@ -2,6 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Hide scrollbar for Firefox */
+* {
+  scrollbar-width: thick;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
