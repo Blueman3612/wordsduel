@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Send, X, Flag } from 'lucide-react'
 import { supabase } from '@/lib/supabase/client'
-import { ReportModal } from '@/components/game/ReportModal'
+import { ActionModal } from '@/components/game/ActionModal'
 
 interface WordCard {
   word: string
@@ -145,10 +145,11 @@ export default function GamePage() {
   return (
     <main className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800">
       {/* Report Modal */}
-      <ReportModal
+      <ActionModal
         isOpen={!!reportedWord}
         onClose={() => setReportedWord('')}
         word={reportedWord || ''}
+        mode="report"
       />
 
       <div className="h-screen flex">

@@ -1,13 +1,11 @@
-import type { Metadata } from "next";
+'use client'
+
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { AuthProvider } from "@/lib/context/auth";
+import { ToastProvider } from "@/lib/context/toast";
 
 const inter = Inter({ subsets: ["latin"] });
-
-export const metadata: Metadata = {
-  title: "WordsDuel - Real-time Word Game",
-  description: "A multiplayer word game where players compete by matching word parameters",
-};
 
 export default function RootLayout({
   children,
@@ -17,7 +15,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        {children}
+        <AuthProvider>
+          <ToastProvider>
+            {children}
+          </ToastProvider>
+        </AuthProvider>
       </body>
     </html>
   );
