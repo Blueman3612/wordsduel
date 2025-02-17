@@ -1,37 +1,28 @@
+'use client'
+
 import { motion } from 'framer-motion'
-import { ReactNode } from 'react'
-import { usePathname } from 'next/navigation'
+import { useNavigation } from '@/lib/context/navigation'
 
 interface PageTransitionProps {
-  children: ReactNode
+  children: React.ReactNode
+  className?: string
 }
 
-export function PageTransition({ children }: PageTransitionProps) {
-  const pathname = usePathname()
-  
-  // Determine if we're going deeper into the app
-  const isDeeper = pathname !== '/'
+export function PageTransition({ children, className = '' }: PageTransitionProps) {
+  const { direction } = useNavigation()
 
   const variants = {
     initial: {
-      x: isDeeper ? '100%' : '-100%',
-      opacity: 1
+      opacity: 0,
+      x: direction === 'forward' ? '100%' : '-100%'
     },
     animate: {
-      x: 0,
       opacity: 1,
-      transition: {
-        duration: 0.3,
-        ease: [0.25, 1, 0.5, 1]
-      }
+      x: 0
     },
     exit: {
-      x: isDeeper ? '-100%' : '100%',
-      opacity: 1,
-      transition: {
-        duration: 0.3,
-        ease: [0.25, 1, 0.5, 1]
-      }
+      opacity: 0,
+      x: direction === 'forward' ? '-100%' : '100%'
     }
   }
 
@@ -41,7 +32,12 @@ export function PageTransition({ children }: PageTransitionProps) {
       initial="initial"
       animate="animate"
       exit="exit"
-      className="w-full h-full"
+      transition={{
+        type: 'spring',
+        stiffness: 260,
+        damping: 20
+      }}
+      className={className}
     >
       {children}
     </motion.div>

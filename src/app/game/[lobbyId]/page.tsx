@@ -1,10 +1,13 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { use } from 'react'
 import { Send, X, Flag } from 'lucide-react'
 import { supabase } from '@/lib/supabase/client'
 import { ActionModal } from '@/components/game/ActionModal'
 import { PageTransition } from '@/components/layout/PageTransition'
+import { useAuth } from '@/lib/context/auth'
+import { useToast } from '@/lib/context/toast'
 
 interface WordCard {
   word: string
@@ -25,11 +28,23 @@ interface Player {
   score: number
 }
 
-export default function GamePage() {
+interface GamePageProps {
+  params: Promise<{
+    lobbyId: string
+  }>
+}
+
+export default function GamePage({ params }: GamePageProps) {
+  const { lobbyId } = use(params)
+  const { user } = useAuth()
+  const { showToast } = useToast()
   const [word, setWord] = useState('')
   const [words, setWords] = useState<WordCard[]>([])
   const [invalidLetters, setInvalidLetters] = useState<string[]>([])
   const [isFlashing, setIsFlashing] = useState(false)
+  const [showModal, setShowModal] = useState(false)
+  const [modalWord, setModalWord] = useState('')
+  const [modalMode, setModalMode] = useState<'success' | 'error' | 'info'>('info')
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
@@ -88,6 +103,29 @@ export default function GamePage() {
     setIsFlashing(true)
     setTimeout(() => setIsFlashing(false), 1000) // Reset after 1 second
   }
+
+  // Verify lobby membership
+  useEffect(() => {
+    if (!user) return
+
+    const checkLobbyMembership = async () => {
+      const { data, error } = await supabase
+        .from('lobby_members')
+        .select('*')
+        .eq('lobby_id', lobbyId)
+        .eq('user_id', user.id)
+        .single()
+
+      if (error || !data) {
+        showToast('You are not a member of this lobby', 'error')
+        // Redirect to lobbies page if not a member
+        window.location.href = '/lobbies'
+        return
+      }
+    }
+
+    checkLobbyMembership()
+  }, [user, lobbyId])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

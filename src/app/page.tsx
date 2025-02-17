@@ -444,12 +444,20 @@ export default function HomePage() {
               A battle of words and wit
             </div>
             
-            <Button
-              onClick={() => router.push('/game')}
-              className="w-48"
-            >
-              Start Game
-            </Button>
+            <div className="flex gap-4">
+              <Button
+                onClick={() => router.push('/game')}
+                className="w-48"
+              >
+                Quick Play
+              </Button>
+              <Button
+                onClick={() => router.push('/lobbies')}
+                className="w-48 bg-white/10 from-transparent to-transparent hover:bg-white/20"
+              >
+                Create/Join Game
+              </Button>
+            </div>
           </div>
         </div>
       </main>
