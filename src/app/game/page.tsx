@@ -27,6 +27,8 @@ interface Player {
 export default function GamePage() {
   const [word, setWord] = useState('')
   const [words, setWords] = useState<WordCard[]>([])
+  const [invalidLetters, setInvalidLetters] = useState<string[]>([])
+  const [isFlashing, setIsFlashing] = useState(false)
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
@@ -73,10 +75,32 @@ export default function GamePage() {
     { id: '2', name: 'Alice', elo: 1350, score: 3 }
   ]
 
+  // Function to check for banned letters
+  const checkBannedLetters = (word: string): string[] => {
+    return bannedLetters.filter(letter => 
+      word.toUpperCase().includes(letter)
+    )
+  }
+
+  // Function to trigger flash animation
+  const triggerFlash = () => {
+    setIsFlashing(true)
+    setTimeout(() => setIsFlashing(false), 1000) // Reset after 1 second
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const trimmedWord = word.trim()
     if (!trimmedWord) return
+
+    // Check for banned letters
+    const foundBannedLetters = checkBannedLetters(trimmedWord)
+    if (foundBannedLetters.length > 0) {
+      setInvalidLetters(foundBannedLetters)
+      triggerFlash()
+      return
+    }
+    setInvalidLetters([])
 
     try {
       const { data, error } = await supabase
@@ -158,7 +182,8 @@ export default function GamePage() {
                     className={`
                       aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
                       ${bannedLetters.includes(letter)
-                        ? 'bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]'
+                        ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
+                           ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                         : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
                     `}
                   >
@@ -173,7 +198,8 @@ export default function GamePage() {
                     className={`
                       aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
                       ${bannedLetters.includes(letter)
-                        ? 'bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]'
+                        ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
+                           ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                         : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
                     `}
                   >
@@ -188,7 +214,8 @@ export default function GamePage() {
                     className={`
                       aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
                       ${bannedLetters.includes(letter)
-                        ? 'bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]'
+                        ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
+                           ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                         : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
                     `}
                   >
@@ -204,7 +231,8 @@ export default function GamePage() {
                     className={`
                       aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
                       ${bannedLetters.includes(letter)
-                        ? 'bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]'
+                        ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
+                           ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                         : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
                     `}
                   >
@@ -339,9 +367,21 @@ export default function GamePage() {
                       <input
                         type="text"
                         value={word}
-                        onChange={(e) => setWord(e.target.value)}
+                        onChange={(e) => {
+                          setWord(e.target.value)
+                          // Clear invalid letters when input changes
+                          setInvalidLetters([])
+                        }}
                         placeholder="Type your word..."
-                        className="flex-1 px-6 py-4 rounded-xl border border-white/20 bg-white/5 text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all hover:border-white/40"
+                        className={`
+                          flex-1 px-6 py-4 rounded-xl border bg-white/5 text-white 
+                          placeholder:text-gray-400 focus:outline-none focus:ring-2 
+                          focus:ring-purple-400 transition-all hover:border-white/40
+                          ${invalidLetters.length > 0 
+                            ? 'border-red-500/50 focus:ring-red-400' 
+                            : 'border-white/20'
+                          }
+                        `}
                       />
                       <button
                         type="submit"
