@@ -90,7 +90,33 @@ export default function LobbiesPage() {
           schema: 'public',
           table: 'lobby_members'
         },
-        () => {
+        async () => {
+          // Check if user is in a full lobby
+          const { data: userLobby } = await supabase
+            .from('lobby_members')
+            .select('lobby_id')
+            .eq('user_id', user.id)
+            .single()
+
+          if (userLobby) {
+            const { data: lobbyData } = await supabase
+              .from('lobbies')
+              .select(`
+                id,
+                max_players,
+                lobby_members (
+                  count
+                )
+              `)
+              .eq('id', userLobby.lobby_id)
+              .single()
+
+            if (lobbyData && lobbyData.lobby_members[0]?.count >= lobbyData.max_players) {
+              router.push(`/game/${userLobby.lobby_id}`)
+              return
+            }
+          }
+
           fetchLobbies()
         }
       )

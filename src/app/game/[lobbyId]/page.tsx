@@ -84,7 +84,7 @@ export default function GamePage({ params }: GamePageProps) {
   ]
   
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
-  const bannedLetters = ['Q', 'X', 'Z']
+  const bannedLetters: string[] = []
 
   const players: [Player, Player] = [
     { id: '1', name: 'Nathan', elo: 1200, score: 5 },

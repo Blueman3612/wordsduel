@@ -28,6 +28,7 @@ export default function HomePage() {
   const [profile, setProfile] = useState<{ id: string; display_name: string; avatar_url?: string } | null>(null)
   const [showProfileModal, setShowProfileModal] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [isQuickPlaying, setIsQuickPlaying] = useState(false)
 
   // Fetch user profile when user changes
   useEffect(() => {
@@ -198,6 +199,111 @@ export default function HomePage() {
     setPassword('')
     setUsername('')
     setRememberMe(false)
+  }
+
+  const handleQuickPlay = async () => {
+    if (!user) {
+      showToast('Please sign in to play', 'error')
+      return
+    }
+
+    try {
+      setIsQuickPlaying(true)
+
+      // Check if user is already in any lobby
+      const { data: existingMembership } = await supabase
+        .from('lobby_members')
+        .select('lobby_id')
+        .eq('user_id', user.id)
+        .single()
+
+      if (existingMembership) {
+        showToast('You are already in a lobby', 'error')
+        router.push('/lobbies')
+        return
+      }
+
+      // First check if user already has a lobby
+      const { data: existingLobby } = await supabase
+        .from('lobbies')
+        .select('id')
+        .eq('host_id', user.id)
+        .eq('status', 'waiting')
+        .single()
+
+      if (existingLobby) {
+        router.push('/lobbies')
+        return
+      }
+
+      // Look for an available public lobby
+      const { data: availableLobby } = await supabase
+        .from('lobbies')
+        .select('id, max_players')
+        .eq('status', 'waiting')
+        .is('password', null)
+        .order('created_at', { ascending: true })
+        .single()
+
+      if (availableLobby) {
+        // Check if lobby is full
+        const { data: memberCount } = await supabase
+          .from('lobby_members')
+          .select('count', { count: 'exact' })
+          .eq('lobby_id', availableLobby.id)
+          .single()
+
+        // Join this lobby
+        const { error: joinError } = await supabase
+          .from('lobby_members')
+          .insert({
+            lobby_id: availableLobby.id,
+            user_id: user.id
+          })
+
+        if (joinError) throw joinError
+
+        // Only redirect to game if the lobby is now full
+        if (memberCount && memberCount.count + 1 >= availableLobby.max_players) {
+          router.push(`/game/${availableLobby.id}`)
+        } else {
+          router.push('/lobbies')
+        }
+        return
+      }
+
+      // No available lobbies, create a new one
+      const { data: lobby, error: createError } = await supabase
+        .from('lobbies')
+        .insert({
+          name: `${profile?.display_name || user.email?.split('@')[0]}'s Lobby`,
+          host_id: user.id,
+          max_players: 2,
+          password: null
+        })
+        .select()
+        .single()
+
+      if (createError) throw createError
+
+      // Join the lobby as host
+      const { error: joinError } = await supabase
+        .from('lobby_members')
+        .insert({
+          lobby_id: lobby.id,
+          user_id: user.id
+        })
+
+      if (joinError) throw joinError
+
+      // Redirect to lobbies since we just created a new lobby
+      router.push('/lobbies')
+    } catch (error) {
+      console.error('Error during quick play:', error)
+      showToast('Failed to start game', 'error')
+    } finally {
+      setIsQuickPlaying(false)
+    }
   }
 
   return (
@@ -446,11 +552,12 @@ export default function HomePage() {
             
             <div className="flex flex-col gap-4">
               <Button
-                onClick={() => router.push('/game')}
+                onClick={handleQuickPlay}
+                disabled={isQuickPlaying}
                 className="w-48 flex items-center justify-center gap-2"
               >
                 <Gamepad className="w-5 h-5" />
-                Quick Play
+                {isQuickPlaying ? 'Finding Game...' : 'Quick Play'}
               </Button>
               <Button
                 onClick={() => router.push('/lobbies')}

@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "seed-words": "tsx scripts/seed-words.ts"
+    "seed-words": "tsx scripts/seed-words.ts",
+    "find-plurals": "tsx scripts/find-plurals.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.1.2",
