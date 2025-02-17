@@ -122,7 +122,7 @@ export default function GamePage({ params }: GamePageProps) {
     }
 
     checkLobbyMembership()
-  }, [user, lobbyId])
+  }, [user, lobbyId, showToast])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
