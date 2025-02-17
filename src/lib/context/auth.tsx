@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import { User } from '@supabase/supabase-js'
+import { User, Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase/client'
 
 interface AuthContextType {
@@ -36,40 +36,88 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  useEffect(() => {
-    // Initialize auth
-    const initAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      
-      // Check if this is a new page load (not a refresh)
+  const handleAuthChange = async (session: Session | null) => {
+    if (session?.user) {
+      // Check persistence settings
+      const shouldPersist = localStorage.getItem('auth_persistence') === 'persist'
+      const hasTempSession = sessionStorage.getItem('temp_session') === 'true'
       const isNewPageLoad = !sessionStorage.getItem('app_loaded')
-      sessionStorage.setItem('app_loaded', 'true')
       
-      if (session) {
-        // For non-persistent sessions on a new page load, sign out
-        if (isNewPageLoad && !localStorage.getItem('auth_persistence') && !sessionStorage.getItem('temp_session')) {
-          await supabase.auth.signOut()
-          setUser(null)
-        } else {
-          setUser(session.user)
-          // Set temp session flag if not persistent
-          if (!localStorage.getItem('auth_persistence')) {
-            sessionStorage.setItem('temp_session', 'true')
+      // Set app_loaded flag
+      if (isNewPageLoad) {
+        sessionStorage.setItem('app_loaded', 'true')
+      }
+
+      // Handle non-persistent sessions
+      if (isNewPageLoad && !shouldPersist && !hasTempSession) {
+        await signOut()
+        return
+      }
+
+      // Set user state
+      setUser(session.user)
+
+      // Handle GitHub profile update
+      if (session.user.app_metadata.provider === 'github') {
+        const githubUsername = session.user.user_metadata.user_name || session.user.user_metadata.preferred_username
+        if (githubUsername) {
+          console.log('Setting GitHub username:', githubUsername)
+          
+          // First check if profile exists
+          const { data: existingProfile, error: fetchError } = await supabase
+            .from('profiles')
+            .select()
+            .eq('id', session.user.id)
+            .single()
+
+          if (fetchError && fetchError.code !== 'PGRST116') {
+            console.error('Error checking existing profile:', fetchError)
+            return
+          }
+
+          let error
+          if (existingProfile) {
+            const { error: updateError } = await supabase
+              .from('profiles')
+              .update({
+                display_name: githubUsername,
+                email: session.user.email,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', session.user.id)
+            error = updateError
+          } else {
+            const { error: insertError } = await supabase
+              .from('profiles')
+              .insert({
+                id: session.user.id,
+                display_name: githubUsername,
+                email: session.user.email,
+                updated_at: new Date().toISOString()
+              })
+            error = insertError
+          }
+
+          if (error) {
+            console.error('Failed to set display name:', error)
           }
         }
-      } else {
-        setUser(null)
       }
-      
-      setLoading(false)
+    } else {
+      setUser(null)
     }
+    setLoading(false)
+  }
 
-    initAuth()
+  useEffect(() => {
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      handleAuthChange(session)
+    })
 
-    // Listen for changes on auth state
+    // Listen for changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-      setLoading(false)
+      handleAuthChange(session)
     })
 
     return () => subscription.unsubscribe()
@@ -81,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null)
       localStorage.removeItem('auth_persistence')
       sessionStorage.removeItem('temp_session')
+      sessionStorage.removeItem('app_loaded')
     } catch (error) {
       console.error('Error signing out:', error)
     }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { useRouter } from 'next/navigation'
@@ -23,6 +23,35 @@ export default function HomePage() {
   const [password, setPassword] = useState('')
   const [username, setUsername] = useState('')
   const [rememberMe, setRememberMe] = useState(false)
+  const [profile, setProfile] = useState<{ display_name: string } | null>(null)
+  const [showProfileModal, setShowProfileModal] = useState(false)
+  const [newDisplayName, setNewDisplayName] = useState('')
+
+  // Fetch user profile when user changes
+  useEffect(() => {
+    async function fetchProfile() {
+      if (user) {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('display_name')
+          .eq('id', user.id)
+          .single()
+        
+        if (error) {
+          console.error('Error fetching profile:', error)
+          return
+        }
+        
+        if (data) {
+          setProfile(data)
+        }
+      } else {
+        setProfile(null)
+      }
+    }
+    
+    fetchProfile()
+  }, [user])
 
   const handleGithubLogin = async () => {
     await setPersistence(rememberMe)
@@ -114,8 +143,56 @@ export default function HomePage() {
     setRememberMe(false)
   }
 
+  const handleUpdateProfile = async () => {
+    if (!user || !newDisplayName.trim()) return
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({ display_name: newDisplayName.trim() })
+      .eq('id', user.id)
+
+    if (error) {
+      showToast('Failed to update profile', 'error')
+      return
+    }
+
+    setProfile({ display_name: newDisplayName.trim() })
+    showToast('Profile updated successfully', 'success')
+    setShowProfileModal(false)
+  }
+
   return (
     <main className="h-screen overflow-hidden bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800">
+      {/* Profile Edit Modal */}
+      <ActionModal
+        isOpen={showProfileModal}
+        onClose={() => setShowProfileModal(false)}
+        word=""
+        mode="info"
+        title="Edit Profile"
+      >
+        <div className="space-y-4">
+          <Input
+            type="text"
+            placeholder="Display Name"
+            value={newDisplayName}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewDisplayName(e.target.value)}
+            className="w-full"
+          />
+          <div className="flex justify-end gap-3">
+            <Button
+              onClick={() => setShowProfileModal(false)}
+              className="bg-white/10 from-transparent to-transparent hover:bg-white/20"
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleUpdateProfile}>
+              Save Changes
+            </Button>
+          </div>
+        </div>
+      </ActionModal>
+
       {/* Auth Modal */}
       <ActionModal
         isOpen={showAuthModal}
@@ -240,23 +317,49 @@ export default function HomePage() {
       
       <div className="relative h-full container mx-auto max-w-4xl">
         {/* Header */}
-        <div className="absolute top-0 right-0 p-8">
-          {user ? (
-            <Button
-              onClick={handleSignOut}
-              className="bg-white/10 from-transparent to-transparent hover:bg-white/20 flex items-center gap-2"
-            >
-              <span>Signed In</span>
-              <LogOut className="w-4 h-4" />
-            </Button>
-          ) : (
-            <Button
-              onClick={() => setShowAuthModal(true)}
-              className="bg-white/10 from-transparent to-transparent hover:bg-white/20"
-            >
-              Sign In
-            </Button>
-          )}
+        <div className="fixed top-0 right-0 p-4 z-50">
+          <div className="flex items-stretch gap-3">
+            {user && (
+              <Button
+                onClick={() => {
+                  setNewDisplayName(profile?.display_name || '')
+                  setShowProfileModal(true)
+                }}
+                className="bg-white/5 backdrop-blur-md border-white/10 hover:bg-white/10 flex items-center gap-3 px-4 h-[56px]"
+              >
+                {/* Profile Picture - using first letter of display name as fallback */}
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500/80 to-pink-500/80 flex items-center justify-center text-sm font-medium text-white shadow-lg border border-white/10">
+                  {(profile?.display_name?.[0] || user.email?.[0])?.toUpperCase()}
+                </div>
+                {/* Display Name and ELO */}
+                <div className="flex flex-col justify-center text-left">
+                  <span className="text-white/90 font-medium leading-tight">
+                    {profile?.display_name || user.email?.split('@')[0]}
+                  </span>
+                  <span className="text-white/50 text-sm leading-tight">
+                    1200
+                  </span>
+                </div>
+              </Button>
+            )}
+            
+            {user ? (
+              <Button
+                onClick={handleSignOut}
+                className="bg-white/10 from-transparent to-transparent hover:bg-white/20 flex items-center gap-2 h-[56px] px-6"
+              >
+                <span>Sign Out</span>
+                <LogOut className="w-4 h-4" />
+              </Button>
+            ) : (
+              <Button
+                onClick={() => setShowAuthModal(true)}
+                className="bg-white/10 from-transparent to-transparent hover:bg-white/20 h-[56px] px-6"
+              >
+                Sign In
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="h-full flex flex-col items-center justify-center">
@@ -277,7 +380,7 @@ export default function HomePage() {
             Start Game
           </Button>
         </div>
-      </div>
-    </main>
+        </div>
+      </main>
   )
 }
