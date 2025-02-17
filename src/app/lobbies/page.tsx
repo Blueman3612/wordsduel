@@ -3,12 +3,13 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/Button'
+import { Card } from '@/components/ui/Card'
 import { ActionModal } from '@/components/game/ActionModal'
 import { supabase } from '@/lib/supabase/client'
 import { useAuth } from '@/lib/context/auth'
 import { useToast } from '@/lib/context/toast'
 import { PageTransition } from '@/components/layout/PageTransition'
-import { Plus, Users, Clock } from 'lucide-react'
+import { Plus, Users, Clock, Lock, LogOut } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
 
 interface Lobby {
@@ -19,12 +20,14 @@ interface Lobby {
   status: 'waiting' | 'in_progress' | 'completed'
   max_players: number
   game_config: any
+  password: string | null
   host: {
     display_name: string
   }
   _count: {
     members: number
   }
+  is_member?: boolean
 }
 
 interface RawLobbyResponse {
@@ -41,6 +44,10 @@ interface RawLobbyResponse {
   lobby_members: number
 }
 
+interface LobbyMember {
+  user_id: string
+}
+
 export default function LobbiesPage() {
   const router = useRouter()
   const { user } = useAuth()
@@ -49,9 +56,12 @@ export default function LobbiesPage() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [newLobbyName, setNewLobbyName] = useState('')
   const [isCreating, setIsCreating] = useState(false)
+  const [lobbyPassword, setLobbyPassword] = useState('')
 
   // Fetch initial lobbies and set up real-time subscription
   useEffect(() => {
+    if (!user) return // Don't fetch if there's no user
+
     fetchLobbies()
     
     // Subscribe to lobby changes
@@ -81,14 +91,33 @@ export default function LobbiesPage() {
       )
       .subscribe()
 
+    // Refresh lobbies periodically to ensure data consistency
+    const refreshInterval = setInterval(fetchLobbies, 5000)
+
     return () => {
       supabase.removeChannel(lobbySubscription)
+      clearInterval(refreshInterval)
     }
-  }, [])
+  }, [user]) // Add user to dependencies
 
   const fetchLobbies = async () => {
+    if (!user) return // Don't fetch if there's no user
+    
     try {
-      // First get the lobbies
+      // First check if user already has a lobby
+      const { data: existingLobby } = await supabase
+        .from('lobbies')
+        .select('id')
+        .eq('host_id', user.id)
+        .eq('status', 'waiting')
+        .single()
+
+      if (existingLobby) {
+        // User already has a lobby, don't show create button
+        setShowCreateModal(false)
+      }
+
+      // Get all lobbies
       const { data: lobbiesData, error: lobbiesError } = await supabase
         .from('lobbies')
         .select('*')
@@ -100,43 +129,44 @@ export default function LobbiesPage() {
         return
       }
 
-      // Then get the member counts for each lobby
-      const lobbiesWithCounts = await Promise.all((lobbiesData ?? []).map(async (lobby) => {
-        const { count, error: countError } = await supabase
-          .from('lobby_members')
-          .select('*', { count: 'exact', head: true })
-          .eq('lobby_id', lobby.id)
+      // Get all member data in a single query
+      const { data: allMemberships } = await supabase
+        .from('lobby_members')
+        .select('lobby_id, user_id')
 
-        if (countError) {
-          console.error('Error counting members:', countError)
-          return null
-        }
+      // Get all host display names in a single query
+      const { data: allProfiles } = await supabase
+        .from('profiles')
+        .select('id, display_name')
 
-        // Get the host's email
-        const { data: hostData, error: hostError } = await supabase
-          .from('profiles')
-          .select('display_name')
-          .eq('id', lobby.host_id)
-          .single()
+      // Create lookup maps for faster access
+      const membershipMap = new Map()
+      allMemberships?.forEach(membership => {
+        const existing = membershipMap.get(membership.lobby_id) || []
+        existing.push(membership.user_id)
+        membershipMap.set(membership.lobby_id, existing)
+      })
 
-        if (hostError) {
-          console.error('Error fetching host:', hostError)
-          return null
-        }
+      const profileMap = new Map(
+        allProfiles?.map(profile => [profile.id, profile.display_name]) || []
+      )
 
+      // Process lobbies using the lookup maps
+      const processedLobbies = lobbiesData?.map(lobby => {
+        const members = membershipMap.get(lobby.id) || []
         return {
           ...lobby,
           host: {
-            display_name: hostData?.display_name || 'Unknown'
+            display_name: profileMap.get(lobby.host_id) || 'Unknown'
           },
           _count: {
-            members: count || 0
-          }
+            members: members.length
+          },
+          is_member: members.includes(user.id)
         }
-      }))
+      }) || []
 
-      // Filter out any null results and set the lobbies
-      setLobbies(lobbiesWithCounts.filter((lobby): lobby is Lobby => lobby !== null))
+      setLobbies(processedLobbies)
     } catch (error) {
       console.error('Error fetching lobbies:', error)
       setLobbies([])
@@ -149,12 +179,26 @@ export default function LobbiesPage() {
     try {
       setIsCreating(true)
 
+      // Check if user already has a lobby
+      const { data: existingLobby } = await supabase
+        .from('lobbies')
+        .select('id')
+        .eq('host_id', user.id)
+        .eq('status', 'waiting')
+        .single()
+
+      if (existingLobby) {
+        showToast('You already have an active lobby', 'error')
+        return
+      }
+
       const { data: lobby, error: createError } = await supabase
         .from('lobbies')
         .insert({
           name: newLobbyName.trim(),
           host_id: user.id,
-          max_players: 2
+          max_players: 2,
+          password: lobbyPassword.trim() || null
         })
         .select()
         .single()
@@ -172,14 +216,20 @@ export default function LobbiesPage() {
       if (joinError) throw joinError
 
       setShowCreateModal(false)
-      setNewLobbyName('')
-      router.push(`/game/${lobby.id}`)
+      resetCreateForm()
+      showToast('Lobby created successfully!', 'success')
+      fetchLobbies()
     } catch (error) {
       console.error('Error creating lobby:', error)
       showToast('Failed to create lobby', 'error')
     } finally {
       setIsCreating(false)
     }
+  }
+
+  const resetCreateForm = () => {
+    setNewLobbyName('')
+    setLobbyPassword('')
   }
 
   const joinLobby = async (lobbyId: string) => {
@@ -205,34 +255,97 @@ export default function LobbiesPage() {
     }
   }
 
+  const deleteLobby = async (lobbyId: string) => {
+    if (!user) return
+
+    try {
+      // First delete all lobby members
+      const { error: membersError } = await supabase
+        .from('lobby_members')
+        .delete()
+        .eq('lobby_id', lobbyId)
+
+      if (membersError) throw membersError
+
+      // Then delete the lobby
+      const { error: lobbyError } = await supabase
+        .from('lobbies')
+        .delete()
+        .eq('id', lobbyId)
+        .eq('host_id', user.id) // Extra safety check
+
+      if (lobbyError) throw lobbyError
+
+      showToast('Lobby deleted successfully', 'success')
+      fetchLobbies()
+    } catch (error) {
+      console.error('Error deleting lobby:', error)
+      showToast('Failed to delete lobby', 'error')
+    }
+  }
+
+  const leaveLobby = async (lobbyId: string) => {
+    if (!user) return
+
+    try {
+      const { error } = await supabase
+        .from('lobby_members')
+        .delete()
+        .eq('lobby_id', lobbyId)
+        .eq('user_id', user.id)
+
+      if (error) throw error
+
+      showToast('Left lobby successfully', 'success')
+      fetchLobbies()
+    } catch (error) {
+      console.error('Error leaving lobby:', error)
+      showToast('Failed to leave lobby', 'error')
+    }
+  }
+
+  // Sort lobbies to show user's hosted lobby first
+  const sortedLobbies = [...lobbies].sort((a, b) => {
+    if (a.host_id === user?.id) return -1
+    if (b.host_id === user?.id) return 1
+    return 0
+  })
+
   return (
     <PageTransition>
       <main className="min-h-screen pt-20 pb-8 px-4">
         <div className="container mx-auto max-w-4xl">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-8">
-            <h1 className="text-3xl font-bold text-white">Game Lobbies</h1>
-            <Button
-              onClick={() => setShowCreateModal(true)}
-              className="flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              Create Lobby
-            </Button>
-          </div>
-
-          {/* Lobby List */}
           <div className="grid gap-4">
-            {lobbies.map(lobby => (
-              <div
+            {/* Only show create lobby card if user doesn't have an active lobby */}
+            {!sortedLobbies.some(lobby => lobby.host_id === user?.id) && (
+              <Card
+                onClick={() => user ? setShowCreateModal(true) : showToast('Please sign in to create a lobby', 'error')}
+                className="p-6 border-dashed hover:border-solid hover:border-purple-400/50"
+              >
+                <div className="flex items-center justify-center gap-3 text-white/60">
+                  <Plus className="w-5 h-5" />
+                  <span className="text-lg">Create New Lobby</span>
+                </div>
+              </Card>
+            )}
+
+            {/* Lobby List */}
+            {sortedLobbies.map(lobby => (
+              <Card
                 key={lobby.id}
-                className="bg-white/5 backdrop-blur-md rounded-xl p-4 border border-white/10"
+                className="p-6"
+                pinned={lobby.host_id === user?.id}
               >
                 <div className="flex items-center justify-between">
                   <div>
-                    <h3 className="text-lg font-medium text-white/90">
-                      {lobby.name}
-                    </h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-medium text-white/90">
+                        {lobby.name}
+                      </h3>
+                      {lobby.password && (
+                        <Lock className="w-4 h-4 text-white/40" />
+                      )}
+                    </div>
                     <div className="flex items-center gap-4 mt-1 text-sm text-white/50">
                       <div className="flex items-center gap-1">
                         <Users className="w-4 h-4" />
@@ -246,15 +359,33 @@ export default function LobbiesPage() {
                       </div>
                     </div>
                   </div>
-                  <Button
-                    onClick={() => joinLobby(lobby.id)}
-                    disabled={lobby._count.members >= lobby.max_players || lobby.host_id === user?.id}
-                    className="bg-white/10 from-transparent to-transparent hover:bg-white/20"
-                  >
-                    {lobby.host_id === user?.id ? 'Your Lobby' : 'Join'}
-                  </Button>
+                  {lobby.host_id === user?.id ? (
+                    <Button
+                      onClick={() => deleteLobby(lobby.id)}
+                      className="bg-white/10 hover:bg-white/20 flex items-center gap-2"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      Leave
+                    </Button>
+                  ) : lobby.is_member ? (
+                    <Button
+                      onClick={() => leaveLobby(lobby.id)}
+                      className="bg-white/10 hover:bg-white/20 flex items-center gap-2"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      Leave
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => joinLobby(lobby.id)}
+                      disabled={lobby._count.members >= lobby.max_players}
+                      className="bg-white/10 from-transparent to-transparent hover:bg-white/20"
+                    >
+                      Join
+                    </Button>
+                  )}
                 </div>
-              </div>
+              </Card>
             ))}
             {lobbies.length === 0 && (
               <div className="text-center py-12 text-white/50">
@@ -269,28 +400,43 @@ export default function LobbiesPage() {
           isOpen={showCreateModal}
           onClose={() => {
             setShowCreateModal(false)
-            setNewLobbyName('')
+            resetCreateForm()
           }}
           word=""
           mode="info"
           title="Create Lobby"
+          hideButtons
         >
-          <div className="space-y-6">
+          <form onSubmit={(e) => { e.preventDefault(); createLobby(); }} className="space-y-6">
             <Input
               type="text"
               placeholder="Lobby Name"
               value={newLobbyName}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewLobbyName(e.target.value)}
               className="w-full"
+              autoFocus
+              required
             />
+            
+            <div className="space-y-2">
+              <Input
+                type="password"
+                placeholder="Password (Optional)"
+                value={lobbyPassword}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLobbyPassword(e.target.value)}
+                className="w-full"
+              />
+              <p className="text-xs text-white/40 italic">Leave empty for a public lobby</p>
+            </div>
+
             <Button
-              onClick={createLobby}
+              type="submit"
               disabled={!newLobbyName.trim() || isCreating}
-              className="w-full"
+              className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
             >
               {isCreating ? 'Creating...' : 'Create Lobby'}
             </Button>
-          </div>
+          </form>
         </ActionModal>
       </main>
     </PageTransition>

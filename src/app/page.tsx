@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/Input'
 import { useRouter } from 'next/navigation'
 import { ActionModal } from '@/components/game/ActionModal'
 import { supabase } from '@/lib/supabase/client'
-import { Github, Mail, LogOut, UserPlus, Camera, Loader2 } from 'lucide-react'
+import { Github, Mail, LogOut, UserPlus, Camera, Loader2, Gamepad, Users } from 'lucide-react'
 import { useAuth } from '@/lib/context/auth'
 import { useToast } from '@/lib/context/toast'
 import { config } from '@/lib/config'
@@ -444,18 +444,20 @@ export default function HomePage() {
               A battle of words and wit
             </div>
             
-            <div className="flex gap-4">
+            <div className="flex flex-col gap-4">
               <Button
                 onClick={() => router.push('/game')}
-                className="w-48"
+                className="w-48 flex items-center justify-center gap-2"
               >
+                <Gamepad className="w-5 h-5" />
                 Quick Play
               </Button>
               <Button
                 onClick={() => router.push('/lobbies')}
-                className="w-48 bg-white/10 from-transparent to-transparent hover:bg-white/20"
+                className="w-48 bg-white/10 from-transparent to-transparent hover:bg-white/20 flex items-center justify-center gap-2"
               >
-                Create/Join Game
+                <Users className="w-5 h-5" />
+                Lobbies
               </Button>
             </div>
           </div>
