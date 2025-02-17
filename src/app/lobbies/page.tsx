@@ -67,7 +67,7 @@ export default function LobbiesPage() {
     if (!user) return // Don't fetch if there's no user
     
     try {
-      // Get all lobbies first
+      // Get all lobbies with their members
       const { data: lobbiesData, error: lobbiesError } = await supabase
         .from('lobbies')
         .select(`
@@ -96,7 +96,7 @@ export default function LobbiesPage() {
         profiles?.map(profile => [profile.id, profile.display_name]) || []
       )
 
-      // Process lobbies using the separate data
+      // Process lobbies using the joined data
       const processedLobbies = lobbiesData?.map(lobby => ({
         ...lobby,
         host: {
@@ -183,7 +183,7 @@ export default function LobbiesPage() {
       supabase.removeChannel(lobbySubscription)
       clearInterval(refreshInterval)
     }
-  }, [user, router, fetchLobbies]) // Added missing dependencies
+  }, [user, router, fetchLobbies])
 
   const createLobby = async () => {
     if (!user || !newLobbyName.trim()) return
