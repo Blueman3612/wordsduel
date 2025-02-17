@@ -42,13 +42,10 @@ export default function GamePage({ params }: GamePageProps) {
   const [words, setWords] = useState<WordCard[]>([])
   const [invalidLetters, setInvalidLetters] = useState<string[]>([])
   const [isFlashing, setIsFlashing] = useState(false)
-  const [showModal, setShowModal] = useState(false)
-  const [modalWord, setModalWord] = useState('')
-  const [modalMode, setModalMode] = useState<'success' | 'error' | 'info'>('info')
+  const [reportedWord, setReportedWord] = useState('')
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
-  const [reportedWord, setReportedWord] = useState('')
 
   // Auto-scroll to bottom when words change
   useEffect(() => {

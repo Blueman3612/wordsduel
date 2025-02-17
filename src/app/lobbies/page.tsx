@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -20,7 +20,7 @@ interface Lobby {
   created_at: string
   status: 'waiting' | 'in_progress' | 'completed'
   max_players: number
-  game_config: any
+  game_config: Record<string, unknown>
   password: string | null
   host: {
     display_name: string
@@ -30,6 +30,7 @@ interface Lobby {
   }
   is_member?: boolean
   password_required?: boolean
+  lobby_members?: Array<{ count: number }>
 }
 
 interface RawLobbyResponse {
@@ -62,6 +63,79 @@ export default function LobbiesPage() {
   const [joiningLobby, setJoiningLobby] = useState<Lobby | null>(null)
   const [joinPassword, setJoinPassword] = useState('')
   const [isJoining, setIsJoining] = useState(false)
+
+  const fetchLobbies = useCallback(async () => {
+    if (!user) return // Don't fetch if there's no user
+    
+    try {
+      // First check if user already has a lobby
+      const { data: existingLobby } = await supabase
+        .from('lobbies')
+        .select('id')
+        .eq('host_id', user.id)
+        .eq('status', 'waiting')
+        .single()
+
+      if (existingLobby) {
+        // User already has a lobby, don't show create button
+        setShowCreateModal(false)
+      }
+
+      // Get all lobbies
+      const { data: lobbiesData, error: lobbiesError } = await supabase
+        .from('lobbies')
+        .select('*')
+        .eq('status', 'waiting')
+        .order('created_at', { ascending: false })
+
+      if (lobbiesError) {
+        console.error('Error fetching lobbies:', lobbiesError)
+        return
+      }
+
+      // Get all member data in a single query
+      const { data: allMemberships } = await supabase
+        .from('lobby_members')
+        .select('lobby_id, user_id')
+
+      // Get all host display names in a single query
+      const { data: allProfiles } = await supabase
+        .from('profiles')
+        .select('id, display_name')
+
+      // Create lookup maps for faster access
+      const membershipMap = new Map()
+      allMemberships?.forEach(membership => {
+        const existing = membershipMap.get(membership.lobby_id) || []
+        existing.push(membership.user_id)
+        membershipMap.set(membership.lobby_id, existing)
+      })
+
+      const profileMap = new Map(
+        allProfiles?.map(profile => [profile.id, profile.display_name]) || []
+      )
+
+      // Process lobbies using the lookup maps
+      const processedLobbies = lobbiesData?.map(lobby => {
+        const members = membershipMap.get(lobby.id) || []
+        return {
+          ...lobby,
+          host: {
+            display_name: profileMap.get(lobby.host_id) || 'Unknown'
+          },
+          _count: {
+            members: members.length
+          },
+          is_member: members.includes(user.id)
+        } as Lobby
+      }) || []
+
+      setLobbies(processedLobbies)
+    } catch (error) {
+      console.error('Error fetching lobbies:', error)
+      setLobbies([])
+    }
+  }, [user, setShowCreateModal])
 
   // Fetch initial lobbies and set up real-time subscription
   useEffect(() => {
@@ -129,80 +203,7 @@ export default function LobbiesPage() {
       supabase.removeChannel(lobbySubscription)
       clearInterval(refreshInterval)
     }
-  }, [user]) // Add user to dependencies
-
-  const fetchLobbies = async () => {
-    if (!user) return // Don't fetch if there's no user
-    
-    try {
-      // First check if user already has a lobby
-      const { data: existingLobby } = await supabase
-        .from('lobbies')
-        .select('id')
-        .eq('host_id', user.id)
-        .eq('status', 'waiting')
-        .single()
-
-      if (existingLobby) {
-        // User already has a lobby, don't show create button
-        setShowCreateModal(false)
-      }
-
-      // Get all lobbies
-      const { data: lobbiesData, error: lobbiesError } = await supabase
-        .from('lobbies')
-        .select('*')
-        .eq('status', 'waiting')
-        .order('created_at', { ascending: false })
-
-      if (lobbiesError) {
-        console.error('Error fetching lobbies:', lobbiesError)
-        return
-      }
-
-      // Get all member data in a single query
-      const { data: allMemberships } = await supabase
-        .from('lobby_members')
-        .select('lobby_id, user_id')
-
-      // Get all host display names in a single query
-      const { data: allProfiles } = await supabase
-        .from('profiles')
-        .select('id, display_name')
-
-      // Create lookup maps for faster access
-      const membershipMap = new Map()
-      allMemberships?.forEach(membership => {
-        const existing = membershipMap.get(membership.lobby_id) || []
-        existing.push(membership.user_id)
-        membershipMap.set(membership.lobby_id, existing)
-      })
-
-      const profileMap = new Map(
-        allProfiles?.map(profile => [profile.id, profile.display_name]) || []
-      )
-
-      // Process lobbies using the lookup maps
-      const processedLobbies = lobbiesData?.map(lobby => {
-        const members = membershipMap.get(lobby.id) || []
-        return {
-          ...lobby,
-          host: {
-            display_name: profileMap.get(lobby.host_id) || 'Unknown'
-          },
-          _count: {
-            members: members.length
-          },
-          is_member: members.includes(user.id)
-        }
-      }) || []
-
-      setLobbies(processedLobbies)
-    } catch (error) {
-      console.error('Error fetching lobbies:', error)
-      setLobbies([])
-    }
-  }
+  }, [user, router, fetchLobbies]) // Add all required dependencies
 
   const createLobby = async () => {
     if (!user || !newLobbyName.trim()) return
