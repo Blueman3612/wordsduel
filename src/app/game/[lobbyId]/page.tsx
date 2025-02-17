@@ -42,10 +42,13 @@ export default function GamePage({ params }: GamePageProps) {
   const [words, setWords] = useState<WordCard[]>([])
   const [invalidLetters, setInvalidLetters] = useState<string[]>([])
   const [isFlashing, setIsFlashing] = useState(false)
-  const [reportedWord, setReportedWord] = useState('')
+  const [showModal, setShowModal] = useState(false)
+  const [modalWord, setModalWord] = useState('')
+  const [modalMode, setModalMode] = useState<'success' | 'error' | 'info'>('info')
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
+  const [reportedWord, setReportedWord] = useState('')
 
   // Auto-scroll to bottom when words change
   useEffect(() => {
@@ -122,7 +125,7 @@ export default function GamePage({ params }: GamePageProps) {
     }
 
     checkLobbyMembership()
-  }, [user, lobbyId, showToast])
+  }, [user, lobbyId])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

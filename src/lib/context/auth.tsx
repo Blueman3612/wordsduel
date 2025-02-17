@@ -120,10 +120,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       handleAuthChange(session)
     })
 
-    return () => {
-      subscription.unsubscribe()
-    }
-  }, [handleAuthChange])
+    return () => subscription.unsubscribe()
+  }, [])
 
   const signOut = async () => {
     try {
