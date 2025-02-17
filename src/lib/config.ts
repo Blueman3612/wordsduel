@@ -7,6 +7,6 @@ export const config = {
     ? 'Ov23liampCT2G2nvJeyc'  // Production Client ID
     : 'Ov23liZDOkq7h0o8w2aj',    // Development Client ID
   baseUrl: isProd
-    ? 'https://wordsduel.vercel.app'  // Your production domain
-    : 'http://localhost:3000'
+    ? 'https://wordsduel.vercel.app'  // Production URL
+    : 'http://localhost:3000'         // Development URL
 } 

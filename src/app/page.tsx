@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabase/client'
 import { Github, Mail, LogOut, UserPlus } from 'lucide-react'
 import { useAuth } from '@/lib/context/auth'
 import { useToast } from '@/lib/context/toast'
+import { config } from '@/lib/config'
 
 type AuthMode = 'github' | 'signin' | 'register'
 
@@ -28,7 +29,7 @@ export default function HomePage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'github',
       options: {
-        redirectTo: `${window.location.origin}`,
+        redirectTo: `${config.baseUrl}`,
         queryParams: {
           access_type: 'offline',
           prompt: 'consent'
