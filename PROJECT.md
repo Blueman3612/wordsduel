@@ -1,39 +1,45 @@
 # WordsDuel - A Real-time Word Game
 
 ## Project Overview
-WordsDuel is a real-time multiplayer word game where players take turns typing words that match given parameters. The game progressively gets harder as parameters become more specific, continuing until a player fails to provide a valid word within the time limit.
+WordsDuel is a real-time multiplayer word game where players take turns typing words that match given parameters. The game features a beautiful, modern UI with smooth animations, expandable word cards, and real-time validation against a Supabase dictionary.
 
 ### Game Flow
 1. Players join a game session
 2. Initial parameter is given (e.g., "Noun")
 3. Players alternate turns:
    - Player types a word matching the parameter
-   - Word is validated against dictionary and parameters
+   - Word is validated against Supabase dictionary
    - Word is checked for uniqueness against used words
-   - Valid word is added to "used words" list
-4. Parameters become progressively harder (e.g., "Includes letter X")
-5. Game continues until a player fails to provide a valid word in time
+   - Valid word is added to the word chain with dictionary information
+   - Invalid words are marked and displayed with a strike-through
+4. Players can report words they believe are invalid
+5. Game continues until a player fails to provide a valid word
 
 ## File Structure
 ```
 src/
 ├── app/
 │   ├── api/           # API routes for game logic and validation
-│   ├── game/          # Game-related pages
-│   └── auth/          # Authentication pages
+│   │   └── validate/  # Word validation endpoint
+│   ├── game/          # Game page and components
+│   └── layout.tsx     # Root layout with global styles
 ├── components/
-│   ├── game/          # Game-specific components
-│   └── ui/            # Reusable UI components (Button, Input, Card)
+│   ├── game/          # Game-specific components (ReportModal)
+│   └── ui/            # Reusable UI components (Button, Input, Card, Modal)
 ├── lib/
-│   ├── supabase/      # Supabase client and utilities
-│   ├── utils/         # Helper functions and word processing
-│   └── store/         # Zustand store configurations
-└── types/             # TypeScript type definitions
+│   ├── supabase/      # Supabase client configuration
+│   ├── utils/         # Helper functions
+│   │   ├── word-filters.ts    # Word validation rules
+│   │   ├── word-analyzer.ts   # Word analysis utilities
+│   │   ├── dictionary.ts      # Dictionary operations
+│   │   └── parameters.ts      # Game parameter generation
+│   ├── store/         # Game state management (Zustand)
+│   └── types/         # TypeScript type definitions
 ```
 
 ## Word Processing System
 ### Word Validation
-- Dictionary validation using Dictionary API
+- Dictionary validation using Supabase database
 - Part of speech validation (nouns, verbs, adjectives, adverbs)
 - Word form validation:
   - Nouns: Must be singular form
@@ -46,7 +52,7 @@ src/
 - Filters out plural forms:
   - Words ending in 's' (with exceptions like 'glass', 'bass')
   - Words ending in 'es' or 'ies'
-  - Validates against dictionary to catch irregular plurals
+  - Uses spell checker to validate singular forms
 - Removes conjugated verbs:
   - Past tense (-ed)
   - Progressive (-ing)
@@ -55,65 +61,70 @@ src/
   - Comparative (-er)
   - Superlative (-est)
 
-## State Management (Zustand)
-### Game State:
+## UI Components
+### Game Interface
+- Responsive layout with sidebar and main content area
+- Word chain display with expandable word cards
+- Visual feedback for valid/invalid words
+- Letter grid showing available/banned letters
+- Player profiles with ELO ratings
+
+### Word Cards
+- Expandable on hover for additional information
+- Shows word definition, part of speech, and phonetics
+- Color-coded borders for different players
+- Report functionality for questionable words
+- Smart positioning (left/right expansion) based on screen space
+
+### Report Modal
+- Multiple report reason options
+- Additional context input
+- Clean, modern design with backdrop blur
+
+## State Management
+### Game State
 ```typescript
 {
-  id: string
-  status: 'waiting' | 'playing' | 'finished'
-  players: Player[]
-  currentPlayer: string
-  currentParameter: {
-    type: 'noun' | 'verb' | 'adjective' | 'includes' | 'starts_with' | 'ends_with'
-    value?: string
-    difficulty: number
+  word: string                    // Current input word
+  words: WordCard[]              // Chain of played words
+  expandDirection: 'left'|'right' // Card expansion direction
+  reportedWord: string           // Currently reported word
+}
+```
+
+### Word Card Interface
+```typescript
+{
+  word: string
+  player: string
+  timestamp: number
+  isInvalid?: boolean
+  dictionary?: {
+    partOfSpeech?: string
+    definition?: string
+    phonetics?: string
   }
-  usedWords: string[]
-  timeLimit: number
-  winner?: string
 }
 ```
 
 ## API Endpoints
 ### `/api/validate`
 Validates words against:
-- Dictionary existence
-- Parameter matching
-- Word form requirements
+- Supabase dictionary existence
+- Part of speech requirements
+- Word form validation
 - Previous usage
 
-### `/api/game/start`
-- Initializes new game session
-- Sets initial parameter
-- Assigns player order
-
-### `/api/game/move`
-- Processes player moves
-- Updates game state
-- Triggers parameter progression
-
 ## Database Schema
-### Games
+### Words Table
 ```sql
-games (
-  id: uuid primary key
-  created_at: timestamp
-  status: enum
-  current_parameter: jsonb
-  current_player: uuid
-  winner: uuid nullable
-  time_limit: integer
-  used_words: text[]
-)
-```
-
-### Players
-```sql
-players (
-  id: uuid primary key
-  username: text
-  email: text
-  stats: jsonb
+words (
+  word: text primary key
+  part_of_speech: text
+  definitions: text[]
+  phonetics: text
+  synonyms: text[]
+  antonyms: text[]
 )
 ```
 
@@ -129,126 +140,27 @@ players (
 5. Access at `http://localhost:3000`
 
 ## Word Seeding
-Run `npm run seed-words` to populate the database with validated words:
+Run `npm run seed-words` to populate the Supabase database:
 - Processes words from dictionary source
 - Applies validation rules
 - Stores in Supabase with part of speech and definitions
 - Tracks word relationships (synonyms, antonyms)
 - Excludes invalid forms (plurals, conjugations, etc.)
 
-## Deployment Instructions
+## Deployment
 1. Set up Supabase project
-   - Create new project
-   - Run database migrations
-   - Configure authentication
-
-2. Environment Setup
-   ```
-   NEXT_PUBLIC_SUPABASE_URL=your-project-url
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-   ```
-
-3. Build and Deploy
+2. Configure environment variables
+3. Deploy to Vercel:
    ```bash
    npm run build
    npm run start
    ```
 
-4. Vercel Deployment
-   - Connect repository
-   - Configure environment variables
-   - Deploy
-
-## Component Hierarchy
-- Layout
-  - AuthProvider
-    - GameProvider
-      - GameGrid
-        - WordInput
-        - ParameterDisplay
-        - Timer
-        - PlayerScore
-      - GameControls
-      - WordHistory
-
-## State Management (Zustand)
-- Game State:
-  - Current parameter
-  - Used words
-  - Player turns
-  - Timer state
-  - Game status
-- User State:
-  - Authentication
-  - Player statistics
-
-## API Endpoints
-- `/api/game/validate` - Validate word against parameters
-- `/api/game/start` - Initialize new game session
-- `/api/game/move` - Process player move
-- `/api/auth/*` - Authentication endpoints
-
-## Database Schema
-### Games
-```sql
-games (
-  id: uuid primary key
-  created_at: timestamp
-  status: enum
-  current_parameter: text
-  current_player: uuid
-  winner: uuid nullable
-)
-```
-
-### Moves
-```sql
-moves (
-  id: uuid primary key
-  game_id: uuid foreign key
-  player_id: uuid foreign key
-  word: text
-  parameter: text
-  timestamp: timestamp
-)
-```
-
-### Players
-```sql
-players (
-  id: uuid primary key
-  username: text
-  email: text
-  stats: jsonb
-)
-```
-
-## Deployment Instructions
-1. Set up Supabase project
-   - Create new project
-   - Run database migrations
-   - Configure authentication
-
-2. Environment Setup
-   ```
-   NEXT_PUBLIC_SUPABASE_URL=your-project-url
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-   ```
-
-3. Build and Deploy
-   ```bash
-   npm run build
-   npm run start
-   ```
-
-4. Vercel Deployment
-   - Connect repository
-   - Configure environment variables
-   - Deploy
-
-## Development Setup
-1. Clone repository
-2. Install dependencies: `npm install`
-3. Set up environment variables
-4. Run development server: `npm run dev`
-5. Access at `http://localhost:3000` 
+## Technologies Used
+- Next.js 14 with App Router
+- TypeScript
+- Tailwind CSS
+- Supabase
+- Zustand for state management
+- Compromise for word analysis
+- nspell for spell checking 

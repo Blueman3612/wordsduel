@@ -88,8 +88,7 @@ export async function fetchAndFormatWord(word: string): Promise<WordEntry[]> {
       const analysis = await analyzeWord(
         data[0].word.toLowerCase(), 
         meaning.partOfSpeech, 
-        firstDef,
-        extractPhonetics(data[0].phonetics)
+        firstDef
       )
       
       if (analysis.isValid) {
