@@ -76,7 +76,7 @@ export default function HomePage() {
         setShowAuthModal(false)
         resetForm()
       } else if (authMode === 'register') {
-        const { error: signUpError, data } = await supabase.auth.signUp({
+        const { error: signUpError } = await supabase.auth.signUp({
           email: emailOrUsername,
           password,
           options: {
@@ -95,8 +95,8 @@ export default function HomePage() {
         setShowAuthModal(false)
         resetForm()
       }
-    } catch (error: any) {
-      showToast(error.message, 'error')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'An error occurred', 'error')
     }
   }
 
@@ -114,7 +114,7 @@ export default function HomePage() {
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800">
+    <main className="h-screen overflow-hidden bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800">
       {/* Auth Modal */}
       <ActionModal
         isOpen={showAuthModal}
@@ -237,7 +237,7 @@ export default function HomePage() {
       {/* Gradient overlay for depth */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent pointer-events-none" />
       
-      <div className="relative container mx-auto max-w-4xl p-8">
+      <div className="relative h-full container mx-auto max-w-4xl">
         {/* Header */}
         <div className="absolute top-0 right-0 p-8">
           {user ? (
@@ -258,7 +258,7 @@ export default function HomePage() {
           )}
         </div>
 
-        <div className="h-screen flex flex-col items-center justify-center">
+        <div className="h-full flex flex-col items-center justify-center">
           <h1 className="text-7xl font-bold mb-6 text-white tracking-tight">
             Logo
             <span className="bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
@@ -276,7 +276,7 @@ export default function HomePage() {
             Start Game
           </Button>
         </div>
-        </div>
-      </main>
+      </div>
+    </main>
   )
 }
