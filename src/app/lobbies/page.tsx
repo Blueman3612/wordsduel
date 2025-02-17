@@ -32,24 +32,6 @@ interface Lobby {
   password_required?: boolean
 }
 
-interface RawLobbyResponse {
-  id: string
-  name: string
-  host_id: string
-  created_at: string
-  status: 'waiting' | 'in_progress' | 'completed'
-  max_players: number
-  game_config: any
-  host: {
-    email: string
-  } | null
-  lobby_members: number
-}
-
-interface LobbyMember {
-  user_id: string
-}
-
 export default function LobbiesPage() {
   const router = useRouter()
   const { user } = useAuth()
