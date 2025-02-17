@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -20,7 +20,7 @@ interface Lobby {
   created_at: string
   status: 'waiting' | 'in_progress' | 'completed'
   max_players: number
-  game_config: any
+  game_config: Record<string, unknown>
   password: string | null
   host: {
     display_name: string
@@ -62,6 +62,58 @@ export default function LobbiesPage() {
   const [joiningLobby, setJoiningLobby] = useState<Lobby | null>(null)
   const [joinPassword, setJoinPassword] = useState('')
   const [isJoining, setIsJoining] = useState(false)
+
+  const fetchLobbies = useCallback(async () => {
+    if (!user) return // Don't fetch if there's no user
+    
+    try {
+      // Get all lobbies first
+      const { data: lobbiesData, error: lobbiesError } = await supabase
+        .from('lobbies')
+        .select(`
+          *,
+          lobby_members (
+            user_id
+          )
+        `)
+        .eq('status', 'waiting')
+        .order('created_at', { ascending: false })
+
+      if (lobbiesError) {
+        console.error('Error fetching lobbies:', lobbiesError)
+        return
+      }
+
+      // Get all host profiles in a single query
+      const hostIds = lobbiesData?.map(lobby => lobby.host_id) || []
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, display_name')
+        .in('id', hostIds)
+
+      // Create a map of host IDs to display names
+      const hostDisplayNames = new Map(
+        profiles?.map(profile => [profile.id, profile.display_name]) || []
+      )
+
+      // Process lobbies using the separate data
+      const processedLobbies = lobbiesData?.map(lobby => ({
+        ...lobby,
+        host: {
+          display_name: hostDisplayNames.get(lobby.host_id) || 'Unknown'
+        },
+        _count: {
+          members: lobby.lobby_members?.length || 0
+        },
+        is_member: lobby.lobby_members?.some((member: { user_id: string }) => member.user_id === user.id) || false
+      })) || []
+
+      setLobbies(processedLobbies)
+    } catch (error) {
+      console.error('Error fetching lobbies:', error)
+      setLobbies([])
+    }
+  }, [user])
 
   // Fetch initial lobbies and set up real-time subscription
   useEffect(() => {
@@ -125,65 +177,13 @@ export default function LobbiesPage() {
       .subscribe()
 
     // Refresh lobbies less frequently to prevent 406 errors
-    const refreshInterval = setInterval(fetchLobbies, 1000)
+    const refreshInterval = setInterval(fetchLobbies, 3000)
 
     return () => {
       supabase.removeChannel(lobbySubscription)
       clearInterval(refreshInterval)
     }
-  }, [user]) // Add user to dependencies
-
-  const fetchLobbies = async () => {
-    if (!user) return // Don't fetch if there's no user
-    
-    try {
-      // Get all lobbies first
-      const { data: lobbiesData, error: lobbiesError } = await supabase
-        .from('lobbies')
-        .select(`
-          *,
-          lobby_members (
-            user_id
-          )
-        `)
-        .eq('status', 'waiting')
-        .order('created_at', { ascending: false })
-
-      if (lobbiesError) {
-        console.error('Error fetching lobbies:', lobbiesError)
-        return
-      }
-
-      // Get all host profiles in a single query
-      const hostIds = lobbiesData?.map(lobby => lobby.host_id) || []
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, display_name')
-        .in('id', hostIds)
-
-      // Create a map of host IDs to display names
-      const hostDisplayNames = new Map(
-        profiles?.map(profile => [profile.id, profile.display_name]) || []
-      )
-
-      // Process lobbies using the separate data
-      const processedLobbies = lobbiesData?.map(lobby => ({
-        ...lobby,
-        host: {
-          display_name: hostDisplayNames.get(lobby.host_id) || 'Unknown'
-        },
-        _count: {
-          members: lobby.lobby_members?.length || 0
-        },
-        is_member: lobby.lobby_members?.some((member: { user_id: string }) => member.user_id === user.id) || false
-      })) || []
-
-      setLobbies(processedLobbies)
-    } catch (error) {
-      console.error('Error fetching lobbies:', error)
-      setLobbies([])
-    }
-  }
+  }, [user, router, fetchLobbies]) // Added missing dependencies
 
   const createLobby = async () => {
     if (!user || !newLobbyName.trim()) return

@@ -34,7 +34,7 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
       setDirection(currentLevel > lastLevel ? 'forward' : 'backward')
     }
     setLastPath(pathname)
-  }, [pathname])
+  }, [pathname, lastPath, setDirection])
 
   return (
     <NavigationContext.Provider value={{ direction, setDirection, lastPath, setLastPath }}>
