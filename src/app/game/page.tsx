@@ -4,9 +4,6 @@ import { useState, useRef, useEffect } from 'react'
 import { Send, X, Flag } from 'lucide-react'
 import { supabase } from '@/lib/supabase/client'
 import { ReportModal } from '@/components/game/ReportModal'
-import { GameParameter } from '@/types/game'
-
-type GameState = 'playing' | 'paused' | 'finished'
 
 interface WordCard {
   word: string
