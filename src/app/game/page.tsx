@@ -156,15 +156,13 @@ export default function GamePage() {
 
         <div className="h-screen flex">
           {/* Sidebar - Fixed */}
-          <aside className="w-80 border-r border-white/10 p-6 flex flex-col relative">
-            <div className="absolute inset-0 bg-gradient-to-b from-black/10 to-transparent pointer-events-none" />
-            
+          <aside className="w-80 border-r border-white/20 shadow-[1px_0_0_0_rgba(255,255,255,0.1)] p-6 flex flex-col">
             <h2 className="text-2xl font-semibold text-white mb-4">
               Words must be...
             </h2>
 
             {/* Parameters List */}
-            <ul className="space-y-1.5 text-white relative">
+            <ul className="space-y-1.5 text-white">
               {parameters.map((param, index) => (
                 <li key={index}>
                   <div className="bg-white/5 backdrop-blur-md rounded-lg px-3 py-2 text-sm border border-white/10 hover:bg-white/10 transition-colors text-center font-medium">

@@ -1,39 +1,81 @@
-# WordsDuel - A Real-time Word Game
+# Logobout - A Real-time Word Game
 
 ## Project Overview
-WordsDuel is a real-time multiplayer word game where players take turns typing words that match given parameters. The game features a beautiful, modern UI with smooth animations, expandable word cards, and real-time validation against a Supabase dictionary.
+Logobout is a real-time multiplayer word game where players take turns typing words that match given parameters. The game features a beautiful, modern UI with smooth page transitions, expandable word cards, real-time validation against a Supabase dictionary, and a dynamic letter grid system.
 
 ### Game Flow
-1. Players join a game session
-2. Initial parameter is given (e.g., "Noun")
+1. Players sign in (via GitHub or email)
+2. Initial parameters are displayed (e.g., "at least 5 letters long", "singular non-proper noun")
 3. Players alternate turns:
-   - Player types a word matching the parameter
+   - Player types a word matching all parameters
    - Word is validated against Supabase dictionary
-   - Word is checked for uniqueness against used words
+   - Word is checked for banned letters (Q, X, Z)
    - Valid word is added to the word chain with dictionary information
    - Invalid words are marked and displayed with a strike-through
 4. Players can report words they believe are invalid
-5. Game continues until a player fails to provide a valid word
+5. Players can eliminate letters by playing antonyms
+6. Game continues until a player fails to provide a valid word
+
+## Features
+
+### Authentication System
+- GitHub OAuth integration
+- Email/Password authentication
+- Username/Email login support
+- Remember me functionality
+- Profile management with display names
+- ELO rating system
+
+### Game Mechanics
+- Real-time word validation
+- Letter elimination system
+- Banned letters with visual feedback
+- Word chain visualization
+- Expandable word cards with definitions
+- Report system for invalid words
+- Parameter-based word requirements
+- Antonym-based letter elimination
+
+### UI/UX Features
+- Smooth page transitions with directional animations
+- Static gradient background
+- Dynamic letter grid with visual feedback
+- Expandable word cards with smart positioning
+- Toast notification system
+- Responsive modals with backdrop blur
+- Custom scrollbar styling
+- Modern gradient buttons with hover effects
 
 ## File Structure
 ```
 src/
 ├── app/
-│   ├── api/           # API routes for game logic and validation
+│   ├── api/           # API routes for game logic
 │   │   └── validate/  # Word validation endpoint
 │   ├── game/          # Game page and components
-│   └── layout.tsx     # Root layout with global styles
+│   └── layout.tsx     # Root layout with animations
 ├── components/
-│   ├── game/          # Game-specific components (ReportModal)
-│   └── ui/            # Reusable UI components (Button, Input, Card, Modal)
+│   ├── game/          # Game-specific components
+│   │   ├── ActionModal.tsx   # Report/Challenge modal
+│   │   └── GameGrid.tsx      # Main game interface
+│   ├── layout/        # Layout components
+│   │   ├── Background.tsx    # Static gradient background
+│   │   └── PageTransition.tsx # Page transition animations
+│   └── ui/            # Reusable UI components
+│       ├── Button.tsx        # Custom button component
+│       ├── Input.tsx         # Form input component
+│       ├── Modal.tsx         # Base modal component
+│       └── Toast.tsx         # Notification component
 ├── lib/
+│   ├── context/       # React context providers
+│   │   ├── auth.tsx          # Authentication context
+│   │   └── toast.tsx         # Toast notification context
 │   ├── supabase/      # Supabase client configuration
 │   ├── utils/         # Helper functions
-│   │   ├── word-filters.ts    # Word validation rules
-│   │   ├── word-analyzer.ts   # Word analysis utilities
-│   │   ├── dictionary.ts      # Dictionary operations
-│   │   └── parameters.ts      # Game parameter generation
-│   ├── store/         # Game state management (Zustand)
+│   │   ├── word-filters.ts   # Word validation rules
+│   │   ├── word-analyzer.ts  # Word analysis utilities
+│   │   ├── dictionary.ts     # Dictionary operations
+│   │   └── parameters.ts     # Game parameter generation
 │   └── types/         # TypeScript type definitions
 ```
 
@@ -44,42 +86,41 @@ src/
 - Word form validation:
   - Nouns: Must be singular form
   - Verbs: Must be infinitive form
-  - Adjectives: Must be base form (no comparative/superlative)
+  - Adjectives: Must be base form
   - Proper nouns are excluded
+- Banned letter validation (Q, X, Z)
 
 ### Word Filtering
 - Removes initialisms, acronyms, and abbreviations
-- Filters out plural forms:
-  - Words ending in 's' (with exceptions like 'glass', 'bass')
-  - Words ending in 'es' or 'ies'
-  - Uses spell checker to validate singular forms
-- Removes conjugated verbs:
-  - Past tense (-ed)
-  - Progressive (-ing)
-  - Third person singular (-s, -es)
-- Excludes modified adjectives:
-  - Comparative (-er)
-  - Superlative (-est)
+- Filters out plural forms
+- Removes conjugated verbs
+- Excludes modified adjectives
+- Validates against banned letters
 
 ## UI Components
 ### Game Interface
-- Responsive layout with sidebar and main content area
-- Word chain display with expandable word cards
+- Responsive layout with fixed sidebar
+- Dynamic letter grid with banned letter highlighting
+- Word chain display with expandable cards
 - Visual feedback for valid/invalid words
-- Letter grid showing available/banned letters
 - Player profiles with ELO ratings
+- Smooth page transitions
 
 ### Word Cards
 - Expandable on hover for additional information
-- Shows word definition, part of speech, and phonetics
+- Smart positioning (left/right expansion)
+- Shows word definition and phonetics
 - Color-coded borders for different players
-- Report functionality for questionable words
-- Smart positioning (left/right expansion) based on screen space
+- Report functionality
+- Arrow connections between words
 
-### Report Modal
-- Multiple report reason options
-- Additional context input
-- Clean, modern design with backdrop blur
+### Authentication UI
+- GitHub integration
+- Email/Password registration
+- Username/Email login
+- Remember me option
+- Profile editing
+- ELO display
 
 ## State Management
 ### Game State
@@ -89,43 +130,9 @@ src/
   words: WordCard[]              // Chain of played words
   expandDirection: 'left'|'right' // Card expansion direction
   reportedWord: string           // Currently reported word
+  invalidLetters: string[]       // Currently invalid letters
+  bannedLetters: string[]        // Permanently banned letters
 }
-```
-
-### Word Card Interface
-```typescript
-{
-  word: string
-  player: string
-  timestamp: number
-  isInvalid?: boolean
-  dictionary?: {
-    partOfSpeech?: string
-    definition?: string
-    phonetics?: string
-  }
-}
-```
-
-## API Endpoints
-### `/api/validate`
-Validates words against:
-- Supabase dictionary existence
-- Part of speech requirements
-- Word form validation
-- Previous usage
-
-## Database Schema
-### Words Table
-```sql
-words (
-  word: text primary key
-  part_of_speech: text
-  definitions: text[]
-  phonetics: text
-  synonyms: text[]
-  antonyms: text[]
-)
 ```
 
 ## Development Setup
@@ -139,28 +146,11 @@ words (
 4. Run development server: `npm run dev`
 5. Access at `http://localhost:3000`
 
-## Word Seeding
-Run `npm run seed-words` to populate the Supabase database:
-- Processes words from dictionary source
-- Applies validation rules
-- Stores in Supabase with part of speech and definitions
-- Tracks word relationships (synonyms, antonyms)
-- Excludes invalid forms (plurals, conjugations, etc.)
-
-## Deployment
-1. Set up Supabase project
-2. Configure environment variables
-3. Deploy to Vercel:
-   ```bash
-   npm run build
-   npm run start
-   ```
-
 ## Technologies Used
 - Next.js 14 with App Router
 - TypeScript
 - Tailwind CSS
+- Framer Motion
 - Supabase
-- Zustand for state management
-- Compromise for word analysis
-- nspell for spell checking 
+- Compromise (NLP)
+- nspell (Spell checking) 

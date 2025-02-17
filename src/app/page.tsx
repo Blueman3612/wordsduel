@@ -6,11 +6,12 @@ import { Input } from '@/components/ui/Input'
 import { useRouter } from 'next/navigation'
 import { ActionModal } from '@/components/game/ActionModal'
 import { supabase } from '@/lib/supabase/client'
-import { Github, Mail, LogOut, UserPlus } from 'lucide-react'
+import { Github, Mail, LogOut, UserPlus, Camera, Loader2 } from 'lucide-react'
 import { useAuth } from '@/lib/context/auth'
 import { useToast } from '@/lib/context/toast'
 import { config } from '@/lib/config'
 import { PageTransition } from '@/components/layout/PageTransition'
+import Image from 'next/image'
 
 type AuthMode = 'github' | 'signin' | 'register'
 
@@ -24,9 +25,9 @@ export default function HomePage() {
   const [password, setPassword] = useState('')
   const [username, setUsername] = useState('')
   const [rememberMe, setRememberMe] = useState(false)
-  const [profile, setProfile] = useState<{ display_name: string } | null>(null)
+  const [profile, setProfile] = useState<{ id: string; display_name: string; avatar_url?: string } | null>(null)
   const [showProfileModal, setShowProfileModal] = useState(false)
-  const [newDisplayName, setNewDisplayName] = useState('')
+  const [isUploading, setIsUploading] = useState(false)
 
   // Fetch user profile when user changes
   useEffect(() => {
@@ -34,7 +35,7 @@ export default function HomePage() {
       if (user) {
         const { data, error } = await supabase
           .from('profiles')
-          .select('display_name')
+          .select('id, display_name, avatar_url')
           .eq('id', user.id)
           .single()
         
@@ -53,6 +54,61 @@ export default function HomePage() {
     
     fetchProfile()
   }, [user])
+
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !user) return
+
+    try {
+      setIsUploading(true)
+
+      // Delete old avatar if it exists
+      if (profile?.avatar_url) {
+        const oldPath = profile.avatar_url.split('/').slice(-2).join('/')
+        await supabase.storage
+          .from('avatars')
+          .remove([oldPath])
+      }
+
+      // Upload new avatar with consistent name
+      const fileExt = file.type.split('/')[1]
+      const filePath = `${user.id}/avatar.${fileExt}`
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file, { 
+          upsert: true,
+          contentType: file.type
+        })
+
+      if (uploadError) {
+        throw uploadError
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(filePath)
+
+      // Update profile with new avatar URL
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ avatar_url: publicUrl })
+        .eq('id', user.id)
+
+      if (updateError) {
+        throw updateError
+      }
+
+      setProfile(prev => prev ? { ...prev, avatar_url: publicUrl } : null)
+      showToast('Profile picture updated successfully', 'success')
+    } catch (error) {
+      console.error('Error uploading avatar:', error)
+      showToast('Failed to update profile picture', 'error')
+    } finally {
+      setIsUploading(false)
+    }
+  }
 
   const handleGithubLogin = async () => {
     await setPersistence(rememberMe)
@@ -144,53 +200,62 @@ export default function HomePage() {
     setRememberMe(false)
   }
 
-  const handleUpdateProfile = async () => {
-    if (!user || !newDisplayName.trim()) return
-
-    const { error } = await supabase
-      .from('profiles')
-      .update({ display_name: newDisplayName.trim() })
-      .eq('id', user.id)
-
-    if (error) {
-      showToast('Failed to update profile', 'error')
-      return
-    }
-
-    setProfile({ display_name: newDisplayName.trim() })
-    showToast('Profile updated successfully', 'success')
-    setShowProfileModal(false)
-  }
-
   return (
     <PageTransition>
       <main className="h-screen overflow-hidden">
-        {/* Profile Edit Modal */}
+        {/* Profile Modal */}
         <ActionModal
           isOpen={showProfileModal}
           onClose={() => setShowProfileModal(false)}
           word=""
           mode="info"
-          title="Edit Profile"
+          title="Profile"
+          hideButtons
         >
-          <div className="space-y-4">
-            <Input
-              type="text"
-              placeholder="Display Name"
-              value={newDisplayName}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewDisplayName(e.target.value)}
-              className="w-full"
-            />
-            <div className="flex justify-end gap-3">
-              <Button
-                onClick={() => setShowProfileModal(false)}
-                className="bg-white/10 from-transparent to-transparent hover:bg-white/20"
-              >
-                Cancel
-              </Button>
-              <Button onClick={handleUpdateProfile}>
-                Save Changes
-              </Button>
+          <div className="flex flex-col items-center gap-6">
+            {/* Profile Picture Section */}
+            <div className="relative">
+              <div className="w-24 h-24 rounded-full overflow-hidden bg-gradient-to-br from-purple-500/80 to-pink-500/80 flex items-center justify-center text-xl font-medium text-white shadow-lg border border-white/10">
+                {profile?.avatar_url ? (
+                  <Image
+                    src={profile.avatar_url}
+                    alt="Profile"
+                    width={96}
+                    height={96}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  (profile?.display_name?.[0] || user?.email?.[0])?.toUpperCase()
+                )}
+              </div>
+              {/* Only show upload button if it's the user's own profile */}
+              {user && user.id === profile?.id && (
+                <label className="absolute bottom-0 right-0 p-2 bg-white/10 backdrop-blur-md rounded-full cursor-pointer hover:bg-white/20 transition-colors border border-white/10">
+                  {isUploading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Camera className="w-4 h-4" />
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleAvatarUpload}
+                    disabled={isUploading}
+                  />
+                </label>
+              )}
+            </div>
+
+            {/* Profile Info */}
+            <div className="flex flex-col items-center gap-1">
+              <h3 className="text-lg font-medium text-white/90">
+                {profile?.display_name || user?.email?.split('@')[0]}
+              </h3>
+              <div className="text-white/50">
+                <span className="text-sm">ELO Rating: </span>
+                <span className="font-medium">1200</span>
+              </div>
             </div>
           </div>
         </ActionModal>
@@ -320,20 +385,27 @@ export default function HomePage() {
             <div className="flex items-stretch gap-3">
               {user && (
                 <Button
-                  onClick={() => {
-                    setNewDisplayName(profile?.display_name || '')
-                    setShowProfileModal(true)
-                  }}
+                  onClick={() => setShowProfileModal(true)}
                   className="bg-white/5 backdrop-blur-md border-white/10 hover:bg-white/10 flex items-center gap-3 px-4 h-[56px]"
                 >
-                  {/* Profile Picture - using first letter of display name as fallback */}
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500/80 to-pink-500/80 flex items-center justify-center text-sm font-medium text-white shadow-lg border border-white/10">
-                    {(profile?.display_name?.[0] || user.email?.[0])?.toUpperCase()}
+                  {/* Profile Picture */}
+                  <div className="w-10 h-10 rounded-full overflow-hidden bg-gradient-to-br from-purple-500/80 to-pink-500/80 flex items-center justify-center text-sm font-medium text-white shadow-lg border border-white/10">
+                    {profile?.avatar_url ? (
+                      <Image
+                        src={profile.avatar_url}
+                        alt="Profile"
+                        width={40}
+                        height={40}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      (profile?.display_name?.[0] || user?.email?.[0])?.toUpperCase()
+                    )}
                   </div>
                   {/* Display Name and ELO */}
                   <div className="flex flex-col justify-center text-left">
                     <span className="text-white/90 font-medium leading-tight">
-                      {profile?.display_name || user.email?.split('@')[0]}
+                      {profile?.display_name || user?.email?.split('@')[0]}
                     </span>
                     <span className="text-white/50 text-sm leading-tight">
                       1200
