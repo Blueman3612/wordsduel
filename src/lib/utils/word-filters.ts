@@ -1,5 +1,3 @@
-// Common word endings that indicate plural nouns
-const PLURAL_ENDINGS = ['s', 'es', 'ies']
 // Common verb conjugation endings
 const VERB_CONJUGATIONS = ['ing', 'ed', 's', 'es']
 // Common adjective modifications
@@ -23,11 +21,19 @@ export function isSingular(word: string): boolean {
     // If removing 's' creates a word ending in 'i', it's likely plural (e.g., 'fungi')
     const singular = word.slice(0, -1)
     if (singular.endsWith('i')) return false
+
+    // Check if removing 's' creates a valid word
+    if (spellChecker && spellChecker.correct(singular)) {
+      return false
+    }
   }
 
   // Check for 'ies' ending (e.g., 'cities' -> 'city')
   if (word.endsWith('ies')) {
-    return false
+    const withY = word.slice(0, -3) + 'y'
+    if (spellChecker && spellChecker.correct(withY)) {
+      return false
+    }
   }
 
   // Most other words are considered singular

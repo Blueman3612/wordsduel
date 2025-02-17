@@ -33,27 +33,7 @@ export default function GamePage() {
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
-  const [isReportModalOpen, setIsReportModalOpen] = useState(false)
   const [reportedWord, setReportedWord] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const [gameState, setGameState] = useState<GameState>('playing')
-  const [wordInput, setWordInput] = useState('')
-  const [wordHistory, setWordHistory] = useState<string[]>([])
-  const [score, setScore] = useState(0)
-  const [parameter, setParameter] = useState<GameParameter>({
-    type: 'noun',
-    difficulty: 1
-  })
-  const [targetValue, setTargetValue] = useState(0)
-  const [timeLeft, setTimeLeft] = useState<number>(60)
-  const [isGameStarted, setIsGameStarted] = useState(false)
-  const [isGameOver, setIsGameOver] = useState(false)
-  const [isHighScore, setIsHighScore] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isWordValid, setIsWordValid] = useState<boolean | null>(null)
-  const [validationMessage, setValidationMessage] = useState('')
-  const timerRef = useRef<NodeJS.Timeout | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
 
   // Auto-scroll to bottom when words change
   useEffect(() => {
