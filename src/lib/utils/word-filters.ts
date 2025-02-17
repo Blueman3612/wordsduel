@@ -11,11 +11,8 @@ import dictionary from 'dictionary-en'
 
 let spellChecker: ReturnType<typeof nspell> | null = null
 
-const getSpellChecker = async () => {
-  if (spellChecker) return spellChecker
-  spellChecker = nspell(dictionary)
-  return spellChecker
-}
+// Initialize spell checker
+spellChecker = nspell(dictionary)
 
 export function isSingular(word: string): boolean {
   // Check common plural endings

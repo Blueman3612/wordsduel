@@ -4,6 +4,9 @@ import { useState, useRef, useEffect } from 'react'
 import { Send, X, Flag } from 'lucide-react'
 import { supabase } from '@/lib/supabase/client'
 import { ReportModal } from '@/components/game/ReportModal'
+import { GameParameter } from '@/types/game'
+
+type GameState = 'playing' | 'paused' | 'finished'
 
 interface WordCard {
   word: string
@@ -30,22 +33,45 @@ export default function GamePage() {
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
-  const [error, setError] = useState<string | null>(null)
-  const [reportWord, setReportWord] = useState<string | null>(null)
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false)
+  const [reportedWord, setReportedWord] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [gameState, setGameState] = useState<GameState>('playing')
+  const [wordInput, setWordInput] = useState('')
+  const [wordHistory, setWordHistory] = useState<string[]>([])
+  const [score, setScore] = useState(0)
+  const [parameter, setParameter] = useState<GameParameter>({
+    type: 'noun',
+    difficulty: 1
+  })
+  const [targetValue, setTargetValue] = useState(0)
+  const [timeLeft, setTimeLeft] = useState<number>(60)
+  const [isGameStarted, setIsGameStarted] = useState(false)
+  const [isGameOver, setIsGameOver] = useState(false)
+  const [isHighScore, setIsHighScore] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isWordValid, setIsWordValid] = useState<boolean | null>(null)
+  const [validationMessage, setValidationMessage] = useState('')
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // Auto-scroll to bottom when words change
   useEffect(() => {
-    if (scrollContainerRef.current) {
-      const scrollContainer = scrollContainerRef.current
-      scrollContainer.scrollTo({
-        top: scrollContainer.scrollHeight,
-        behavior: 'smooth'
-      })
+    const scrollContainer = scrollContainerRef.current
+    if (!scrollContainer) return
+
+    scrollContainer.scrollTo({
+      top: scrollContainer.scrollHeight,
+      behavior: 'smooth'
+    })
+
+    return () => {
+      // Cleanup if needed
     }
   }, [words])
 
   // Function to check if element is near right edge
-  const updateExpandDirection = (event: MouseEvent) => {
+  const updateExpandDirection = (event: React.MouseEvent<HTMLDivElement>) => {
     const container = scrollContainerRef.current
     if (!container) return
     
@@ -69,28 +95,6 @@ export default function GamePage() {
     { id: '1', name: 'Nathan', elo: 1200, score: 5 },
     { id: '2', name: 'Alice', elo: 1350, score: 3 }
   ]
-
-  // Fetch dictionary data from Supabase
-  const fetchWordData = async (word: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('words')
-        .select('part_of_speech, definitions, phonetics')
-        .eq('word', word.toLowerCase())
-        .single()
-
-      if (error) throw error
-
-      return data ? {
-        partOfSpeech: data.part_of_speech,
-        definition: data.definitions[0], // Using first definition for simplicity
-        phonetics: data.phonetics
-      } : undefined
-    } catch (error) {
-      console.error('Error fetching word data:', error)
-      return undefined
-    }
-  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -141,9 +145,9 @@ export default function GamePage() {
     <main className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800">
       {/* Report Modal */}
       <ReportModal
-        isOpen={!!reportWord}
-        onClose={() => setReportWord(null)}
-        word={reportWord || ''}
+        isOpen={!!reportedWord}
+        onClose={() => setReportedWord('')}
+        word={reportedWord || ''}
       />
 
       <div className="h-screen flex">
@@ -249,7 +253,7 @@ export default function GamePage() {
                 <div key={index} className="flex items-center">
                   <div 
                     className="relative group" 
-                    onMouseEnter={(e) => updateExpandDirection(e as unknown as MouseEvent)}
+                    onMouseEnter={updateExpandDirection}
                   >
                     {/* Base Card */}
                     <div 
@@ -301,7 +305,7 @@ export default function GamePage() {
                           <p className="text-2xl font-medium text-white">{wordCard.word}</p>
                           {/* Report Button */}
                           <button
-                            onClick={() => setReportWord(wordCard.word)}
+                            onClick={() => setReportedWord(wordCard.word)}
                             className="absolute top-0 right-0 p-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90 transition-colors"
                             aria-label="Report word"
                           >

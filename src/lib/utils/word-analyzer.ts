@@ -10,11 +10,8 @@ interface WordAnalysis {
 
 let spellChecker: ReturnType<typeof nspell> | null = null
 
-const getSpellChecker = async () => {
-  if (spellChecker) return spellChecker
-  spellChecker = nspell(dictionary)
-  return spellChecker
-}
+// Initialize spell checker
+spellChecker = nspell(dictionary)
 
 export async function analyzeWord(word: string, partOfSpeech: string, definition: string): Promise<WordAnalysis> {
   // Convert word to lowercase for consistency
@@ -38,11 +35,10 @@ export async function analyzeWord(word: string, partOfSpeech: string, definition
     }
   }
 
-  // Get spell checker suggestions if the word isn't recognized
-  const spell = await getSpellChecker()
-  if (!spell.correct(word)) {
+  // Check if the word is recognized
+  if (spellChecker && !spellChecker.correct(word)) {
     // Don't immediately reject - just log suggestions if available
-    const suggestions = spell.suggest(word).slice(0, 3)
+    const suggestions = spellChecker.suggest(word).slice(0, 3)
     console.log(`Note: Word "${word}" not in standard dictionary${suggestions.length ? ` (similar words: ${suggestions.join(', ')})` : ''}`)
   }
 
@@ -89,7 +85,7 @@ export async function analyzeWord(word: string, partOfSpeech: string, definition
         if (!EXCEPTIONS.includes(word)) {
           // Check if removing 's' creates a valid word
           const withoutS = word.slice(0, -1)
-          if (spell.correct(withoutS)) {
+          if (spellChecker && spellChecker.correct(withoutS)) {
             return {
               isValid: false,
               reason: `🔍 Likely plural (removing 's' creates valid word "${withoutS}")`
@@ -101,7 +97,7 @@ export async function analyzeWord(word: string, partOfSpeech: string, definition
       // Check for 'es' ending
       if (word.endsWith('es')) {
         const withoutEs = word.slice(0, -2)
-        if (spell.correct(withoutEs)) {
+        if (spellChecker && spellChecker.correct(withoutEs)) {
           return {
             isValid: false,
             reason: `🔍 Likely plural (removing 'es' creates valid word "${withoutEs}")`
@@ -112,7 +108,7 @@ export async function analyzeWord(word: string, partOfSpeech: string, definition
       // Check for 'ies' ending
       if (word.endsWith('ies')) {
         const withY = word.slice(0, -3) + 'y'
-        if (spell.correct(withY)) {
+        if (spellChecker && spellChecker.correct(withY)) {
           return {
             isValid: false,
             reason: `🔍 Likely plural (replacing 'ies' with 'y' creates valid word "${withY}")`
