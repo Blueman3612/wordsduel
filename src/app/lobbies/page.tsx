@@ -11,6 +11,7 @@ import { useToast } from '@/lib/context/toast'
 import { PageTransition } from '@/components/layout/PageTransition'
 import { Plus, Users, Clock, Lock, LogOut } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
+import { format } from 'timeago.js'
 
 interface Lobby {
   id: string
@@ -28,6 +29,7 @@ interface Lobby {
     members: number
   }
   is_member?: boolean
+  password_required?: boolean
 }
 
 interface RawLobbyResponse {
@@ -57,6 +59,9 @@ export default function LobbiesPage() {
   const [newLobbyName, setNewLobbyName] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [lobbyPassword, setLobbyPassword] = useState('')
+  const [joiningLobby, setJoiningLobby] = useState<Lobby | null>(null)
+  const [joinPassword, setJoinPassword] = useState('')
+  const [isJoining, setIsJoining] = useState(false)
 
   // Fetch initial lobbies and set up real-time subscription
   useEffect(() => {
@@ -92,7 +97,7 @@ export default function LobbiesPage() {
       .subscribe()
 
     // Refresh lobbies periodically to ensure data consistency
-    const refreshInterval = setInterval(fetchLobbies, 5000)
+    const refreshInterval = setInterval(fetchLobbies, 1000)
 
     return () => {
       supabase.removeChannel(lobbySubscription)
@@ -232,26 +237,77 @@ export default function LobbiesPage() {
     setLobbyPassword('')
   }
 
-  const joinLobby = async (lobbyId: string) => {
+  const joinLobby = async (lobby: Lobby) => {
     if (!user) {
       showToast('Please sign in to join a lobby', 'error')
       return
     }
 
+    if (lobby.password) {
+      setJoiningLobby(lobby)
+      setJoinPassword('')
+      return
+    }
+
     try {
+      setIsJoining(true)
       const { error } = await supabase
         .from('lobby_members')
         .insert({
-          lobby_id: lobbyId,
+          lobby_id: lobby.id,
           user_id: user.id
         })
 
       if (error) throw error
 
-      router.push(`/game/${lobbyId}`)
+      router.push(`/game/${lobby.id}`)
     } catch (error) {
       console.error('Error joining lobby:', error)
       showToast('Failed to join lobby', 'error')
+    } finally {
+      setIsJoining(false)
+    }
+  }
+
+  const handlePasswordJoin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!joiningLobby || !user) return
+
+    try {
+      setIsJoining(true)
+
+      // Verify password
+      const { data: lobby, error: verifyError } = await supabase
+        .from('lobbies')
+        .select('password')
+        .eq('id', joiningLobby.id)
+        .single()
+
+      if (verifyError) throw verifyError
+
+      if (lobby.password !== joinPassword) {
+        showToast('Incorrect password', 'error')
+        return
+      }
+
+      // Join the lobby
+      const { error: joinError } = await supabase
+        .from('lobby_members')
+        .insert({
+          lobby_id: joiningLobby.id,
+          user_id: user.id
+        })
+
+      if (joinError) throw joinError
+
+      setJoiningLobby(null)
+      setJoinPassword('')
+      router.push(`/game/${joiningLobby.id}`)
+    } catch (error) {
+      console.error('Error joining lobby:', error)
+      showToast('Failed to join lobby', 'error')
+    } finally {
+      setIsJoining(false)
     }
   }
 
@@ -343,7 +399,9 @@ export default function LobbiesPage() {
                         {lobby.name}
                       </h3>
                       {lobby.password && (
-                        <Lock className="w-4 h-4 text-white/40" />
+                        <div className="bg-white/10 p-1 rounded-md">
+                          <Lock className="w-4 h-4 text-pink-400" />
+                        </div>
                       )}
                     </div>
                     <div className="flex items-center gap-4 mt-1 text-sm text-white/50">
@@ -354,19 +412,32 @@ export default function LobbiesPage() {
                       <div className="flex items-center gap-1">
                         <Clock className="w-4 h-4" />
                         <span>
-                          {new Date(lobby.created_at).toLocaleTimeString()}
+                          {format(lobby.created_at)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 text-white/40">
+                        <span>Created by</span>
+                        <span className="text-white/60 font-medium">
+                          {lobby.host.display_name}
                         </span>
                       </div>
                     </div>
                   </div>
                   {lobby.host_id === user?.id ? (
-                    <Button
-                      onClick={() => deleteLobby(lobby.id)}
-                      className="bg-white/10 hover:bg-white/20 flex items-center gap-2"
-                    >
-                      <LogOut className="w-4 h-4" />
-                      Leave
-                    </Button>
+                    <div className="flex items-center gap-4">
+                      {lobby._count.members < lobby.max_players && (
+                        <div className="text-sm text-white/40 italic animate-pulse">
+                          Waiting for players...
+                        </div>
+                      )}
+                      <Button
+                        onClick={() => deleteLobby(lobby.id)}
+                        className="bg-white/10 hover:bg-white/20 flex items-center gap-2"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        Leave
+                      </Button>
+                    </div>
                   ) : lobby.is_member ? (
                     <Button
                       onClick={() => leaveLobby(lobby.id)}
@@ -377,10 +448,11 @@ export default function LobbiesPage() {
                     </Button>
                   ) : (
                     <Button
-                      onClick={() => joinLobby(lobby.id)}
-                      disabled={lobby._count.members >= lobby.max_players}
-                      className="bg-white/10 from-transparent to-transparent hover:bg-white/20"
+                      onClick={() => joinLobby(lobby)}
+                      disabled={lobby._count.members >= lobby.max_players || isJoining}
+                      className="bg-white/10 from-transparent to-transparent hover:bg-white/20 flex items-center gap-2"
                     >
+                      {lobby.password && <Lock className="w-4 h-4" />}
                       Join
                     </Button>
                   )}
@@ -435,6 +507,39 @@ export default function LobbiesPage() {
               className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
             >
               {isCreating ? 'Creating...' : 'Create Lobby'}
+            </Button>
+          </form>
+        </ActionModal>
+
+        {/* Add Password Join Modal */}
+        <ActionModal
+          isOpen={!!joiningLobby}
+          onClose={() => {
+            setJoiningLobby(null)
+            setJoinPassword('')
+          }}
+          word=""
+          mode="info"
+          title="Enter Lobby Password"
+          hideButtons
+        >
+          <form onSubmit={handlePasswordJoin} className="space-y-6">
+            <Input
+              type="password"
+              placeholder="Password"
+              value={joinPassword}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setJoinPassword(e.target.value)}
+              className="w-full"
+              autoFocus
+              required
+            />
+            
+            <Button
+              type="submit"
+              disabled={!joinPassword.trim() || isJoining}
+              className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
+            >
+              {isJoining ? 'Joining...' : 'Join Lobby'}
             </Button>
           </form>
         </ActionModal>
