@@ -178,7 +178,7 @@ export default function LobbiesPage() {
   }, [user, router, fetchLobbies])
 
   const createLobby = async () => {
-    if (!user || !newLobbyName.trim()) return
+    if (!user) return
 
     try {
       setIsCreating(true)
@@ -196,10 +196,21 @@ export default function LobbiesPage() {
         return
       }
 
+      // Get the user's display name for the default lobby name
+      const { data: profiles, error: profileError } = await supabase
+        .from('profiles')
+        .select('display_name')
+        .eq('id', user.id)
+
+      if (profileError) throw profileError
+
+      const displayName = profiles?.[0]?.display_name || user.email?.split('@')[0] || 'Player'
+      const lobbyName = newLobbyName.trim() || `${displayName}'s Lobby`
+
       const { data: lobbies, error: createError } = await supabase
         .from('lobbies')
         .insert({
-          name: newLobbyName.trim(),
+          name: lobbyName,
           host_id: user.id,
           max_players: 2,
           password: lobbyPassword.trim() || null
@@ -487,15 +498,17 @@ export default function LobbiesPage() {
           hideButtons
         >
           <form onSubmit={(e) => { e.preventDefault(); createLobby(); }} className="space-y-6">
-            <Input
-              type="text"
-              placeholder="Lobby Name"
-              value={newLobbyName}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewLobbyName(e.target.value)}
-              className="w-full"
-              autoFocus
-              required
-            />
+            <div className="space-y-2">
+              <Input
+                type="text"
+                placeholder="Lobby Name (Optional)"
+                value={newLobbyName}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewLobbyName(e.target.value)}
+                className="w-full"
+                autoFocus
+              />
+              <p className="text-xs text-white/40 italic">Leave empty to use your username</p>
+            </div>
             
             <div className="space-y-2">
               <Input
@@ -510,7 +523,7 @@ export default function LobbiesPage() {
 
             <Button
               type="submit"
-              disabled={!newLobbyName.trim() || isCreating}
+              disabled={isCreating}
               className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
             >
               {isCreating ? 'Creating...' : 'Create Lobby'}

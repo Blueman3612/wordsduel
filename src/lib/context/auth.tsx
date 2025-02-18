@@ -43,18 +43,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Create profile if it doesn't exist
     if (session?.user) {
-      const { data: existingProfile, error: fetchError } = await supabase
+      const { data: existingProfiles, error: fetchError } = await supabase
         .from('profiles')
         .select('id')
         .eq('id', session.user.id)
-        .single()
 
-      if (fetchError && fetchError.code !== 'PGRST116') {
+      if (fetchError) {
         console.error('Error checking existing profile:', fetchError)
         return
       }
 
-      if (!existingProfile) {
+      if (!existingProfiles || existingProfiles.length === 0) {
         const { error: createError } = await supabase
           .from('profiles')
           .insert({

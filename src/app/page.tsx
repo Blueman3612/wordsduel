@@ -142,13 +142,14 @@ export default function HomePage() {
             .from('profiles')
             .select('email')
             .eq('display_name', emailOrUsername)
-            .single()
-          
-          if (profileError || !profiles?.email) {
+
+          if (profileError || !profiles || profiles.length === 0) {
             showToast('No user found with this username', 'error')
             return
           }
-          email = profiles.email
+          
+          // Use the first matching email
+          email = profiles[0].email
         }
 
         const { error } = await supabase.auth.signInWithPassword({
@@ -250,11 +251,12 @@ export default function HomePage() {
 
       if (availableLobby) {
         // Check if lobby is full
-        const { data: memberCount } = await supabase
+        const { count, error: countError } = await supabase
           .from('lobby_members')
-          .select('count', { count: 'exact' })
+          .select('*', { count: 'exact', head: true })
           .eq('lobby_id', availableLobby.id)
-          .single()
+
+        if (countError) throw countError
 
         // Join this lobby
         const { error: joinError } = await supabase
@@ -267,7 +269,7 @@ export default function HomePage() {
         if (joinError) throw joinError
 
         // Only redirect to game if the lobby is now full
-        if (memberCount && memberCount.count + 1 >= availableLobby.max_players) {
+        if (count && count + 1 >= availableLobby.max_players) {
           router.push(`/game/${availableLobby.id}`)
         } else {
           router.push('/lobbies')
