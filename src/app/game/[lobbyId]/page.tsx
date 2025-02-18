@@ -12,7 +12,7 @@ import { Avatar } from '@/components/ui/Avatar'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils/cn'
 import { RealtimeChannel } from '@supabase/supabase-js'
-import { calculateWordScore, countUniqueLetters, calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
+import { countUniqueLetters, calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
 
 interface WordCard {
   word: string
@@ -46,11 +46,6 @@ interface Profile {
   display_name: string
   avatar_url: string | null
   elo: number
-}
-
-interface LobbyMember {
-  user_id: string
-  profiles: Profile
 }
 
 interface GameWord {
@@ -273,7 +268,7 @@ export default function GamePage({ params }: GamePageProps) {
                   const currentScore = updatedPlayers[playerIndex].score || 0
                   updatedPlayers[playerIndex] = {
                     ...updatedPlayers[playerIndex],
-                    score: currentScore + newWord.score
+                    score: currentScore + (newWord.score || 0)
                   }
                 }
                 return updatedPlayers
@@ -377,7 +372,7 @@ export default function GamePage({ params }: GamePageProps) {
 
     try {
       // First check if word has already been played in this lobby
-      const { data: existingWord, error: existingError } = await supabase
+      const { data: existingWord } = await supabase
         .from('game_words')
         .select('id')
         .eq('lobby_id', lobbyId)
