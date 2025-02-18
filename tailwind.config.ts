@@ -31,11 +31,17 @@ const config: Config = {
             boxShadow: '0 0 20px rgba(239, 68, 68, 0.8)'
           },
         },
+        'pulse-ring': {
+          '0%': { transform: 'scale(1)', opacity: '0.5' },
+          '50%': { transform: 'scale(1.05)', opacity: '0.8' },
+          '100%': { transform: 'scale(1)', opacity: '0.5' }
+        }
       },
       animation: {
         shake: 'shake 0.5s ease-in-out',
         'fade-in': 'fade-in 0.2s ease-out',
         flash: 'flash 1s ease-in-out',
+        'pulse-ring': 'pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
       },
     },
   },

@@ -8,6 +8,9 @@ import { ActionModal } from '@/components/game/ActionModal'
 import { PageTransition } from '@/components/layout/PageTransition'
 import { useAuth } from '@/lib/context/auth'
 import { useToast } from '@/lib/context/toast'
+import { Avatar } from '@/components/ui/Avatar'
+import { Tooltip } from '@/components/ui/Tooltip'
+import { cn } from '@/lib/utils/cn'
 
 interface WordCard {
   word: string
@@ -26,6 +29,19 @@ interface Player {
   name: string
   elo: number
   score: number
+  avatar_url?: string | null
+}
+
+interface Profile {
+  id: string
+  display_name: string
+  avatar_url: string | null
+  elo: number
+}
+
+interface LobbyMember {
+  user_id: string
+  profiles: Profile
 }
 
 interface GamePageProps {
@@ -43,6 +59,9 @@ export default function GamePage({ params }: GamePageProps) {
   const [invalidLetters, setInvalidLetters] = useState<string[]>([])
   const [isFlashing, setIsFlashing] = useState(false)
   const [reportedWord, setReportedWord] = useState('')
+  const [players, setPlayers] = useState<Player[]>([])
+  const [isLoadingPlayers, setIsLoadingPlayers] = useState(true)
+  const [currentTurn, setCurrentTurn] = useState<number>(0) // Start with player 1 (non-host)
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
@@ -83,10 +102,53 @@ export default function GamePage({ params }: GamePageProps) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
   const bannedLetters: string[] = []
 
-  const players: [Player, Player] = [
-    { id: '1', name: 'Nathan', elo: 1200, score: 5 },
-    { id: '2', name: 'Alice', elo: 1350, score: 3 }
-  ]
+  // Fetch lobby members and their profiles
+  useEffect(() => {
+    if (!user) return
+
+    const fetchLobbyMembers = async () => {
+      setIsLoadingPlayers(true)
+      try {
+        // First get the lobby members
+        const { data: members, error: membersError } = await supabase
+          .from('lobby_members')
+          .select('user_id')
+          .eq('lobby_id', lobbyId)
+
+        if (membersError) throw membersError
+
+        if (!members?.length) {
+          setIsLoadingPlayers(false)
+          return
+        }
+
+        // Then get their profiles
+        const { data: profiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, display_name, avatar_url, elo')
+          .in('id', members.map(m => m.user_id))
+
+        if (profilesError) throw profilesError
+
+        if (profiles) {
+          const formattedPlayers: Player[] = profiles.map(profile => ({
+            id: profile.id,
+            name: profile.display_name,
+            elo: profile.elo || 1200,
+            score: 0,
+            avatar_url: profile.avatar_url
+          }))
+          setPlayers(formattedPlayers)
+        }
+      } catch (error) {
+        console.error('Error fetching players:', error)
+        showToast('Error loading players', 'error')
+      }
+      setIsLoadingPlayers(false)
+    }
+
+    fetchLobbyMembers()
+  }, [user, lobbyId, showToast])
 
   // Function to check for banned letters
   const checkBannedLetters = (word: string): string[] => {
@@ -127,7 +189,17 @@ export default function GamePage({ params }: GamePageProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const trimmedWord = word.trim()
-    if (!trimmedWord) return
+    if (!trimmedWord || !players.length) return
+
+    // Verify it's the player's turn
+    const isPlayerOne = user?.id === players[0]?.id
+    const isPlayerTwo = user?.id === players[1]?.id
+    const isPlayersTurn = (currentTurn === 0 && isPlayerOne) || (currentTurn === 1 && isPlayerTwo)
+
+    if (!isPlayersTurn) {
+      showToast("It's not your turn!", 'error')
+      return
+    }
 
     // Check for banned letters
     const foundBannedLetters = checkBannedLetters(trimmedWord)
@@ -147,7 +219,7 @@ export default function GamePage({ params }: GamePageProps) {
       if (error || !data || data.length === 0) {
         setWords(prev => [...prev, {
           word: trimmedWord,
-          player: players[0].name,
+          player: players[currentTurn]?.name || 'Unknown',
           timestamp: Date.now(),
           isInvalid: true
         }])
@@ -156,7 +228,7 @@ export default function GamePage({ params }: GamePageProps) {
         const firstEntry = data[0]
         setWords(prev => [...prev, {
           word: trimmedWord,
-          player: players[0].name,
+          player: players[currentTurn]?.name || 'Unknown',
           timestamp: Date.now(),
           dictionary: {
             partOfSpeech: firstEntry.part_of_speech,
@@ -164,12 +236,14 @@ export default function GamePage({ params }: GamePageProps) {
             phonetics: firstEntry.phonetics
           }
         }])
+        // Switch turns after a valid word
+        setCurrentTurn(prev => prev === 0 ? 1 : 0)
       }
     } catch (error) {
       console.error('Error checking word:', error)
       setWords(prev => [...prev, {
         word: trimmedWord,
-        player: players[0].name,
+        player: players[currentTurn]?.name || 'Unknown',
         timestamp: Date.now(),
         isInvalid: true
       }])
@@ -209,6 +283,14 @@ export default function GamePage({ params }: GamePageProps) {
 
             {/* Letter Grid */}
             <div className="mt-auto relative">
+              {/* Turn Indicator */}
+              {user?.id === players[currentTurn]?.id && (
+                <div className="absolute -top-12 left-1/2 -translate-x-1/2 whitespace-nowrap">
+                  <p className="text-lg font-medium text-white/80 animate-pulse">
+                    Your turn!
+                  </p>
+                </div>
+              )}
               <div className="flex flex-col gap-2">
                 {/* First row (6 letters) */}
                 <div className="grid grid-cols-7 gap-2 -translate-x-[calc(-1.25rem+1px)]">
@@ -302,7 +384,7 @@ export default function GamePage({ params }: GamePageProps) {
                           relative bg-white/10 backdrop-blur-md rounded-2xl p-4 shadow-lg
                           ${wordCard.isInvalid 
                             ? 'border-2 border-red-500/40 shadow-[0_0_10px_-3px_rgba(239,68,68,0.3)] bg-red-500/10' 
-                            : wordCard.player !== players[0].name 
+                            : wordCard.player !== players[0]?.name 
                               ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
                               : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
                           }
@@ -335,7 +417,7 @@ export default function GamePage({ params }: GamePageProps) {
                             group-hover:opacity-100 group-hover:pointer-events-auto
                             group-hover:w-[300px]
                             ${expandDirection === 'left' ? 'right-0' : 'left-0'}
-                            ${wordCard.player !== players[0].name 
+                            ${wordCard.player !== players[0]?.name 
                               ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
                               : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
                             }
@@ -408,23 +490,29 @@ export default function GamePage({ params }: GamePageProps) {
                             // Clear invalid letters when input changes
                             setInvalidLetters([])
                           }}
-                          placeholder="Type your word..."
-                          className={`
+                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id}
+                          placeholder={user?.id === players[currentTurn]?.id 
+                            ? "Type your word..." 
+                            : "Waiting for opponent..."}
+                          className={cn(`
                             flex-1 px-6 py-4 rounded-xl border bg-white/5 text-white 
                             placeholder:text-gray-400 focus:outline-none focus:ring-2 
                             focus:ring-purple-400 transition-all hover:border-white/40
-                            ${invalidLetters.length > 0 
+                            disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-white/20
+                            `,
+                            invalidLetters.length > 0 
                               ? 'border-red-500/50 focus:ring-red-400' 
                               : 'border-white/20'
-                            }
-                          `}
+                          )}
                         />
                         <button
                           type="submit"
+                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id}
                           className="p-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl shadow-lg transition-all duration-200 
                           hover:shadow-xl hover:scale-105 hover:from-purple-600 hover:to-pink-600 
                           active:scale-95 active:shadow-md active:translate-y-0.5
-                          disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-lg disabled:hover:translate-y-0"
+                          disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-lg disabled:hover:translate-y-0
+                          disabled:from-gray-500 disabled:to-gray-600"
                           aria-label="Submit word"
                         >
                           <Send className="w-6 h-6" />
@@ -436,22 +524,62 @@ export default function GamePage({ params }: GamePageProps) {
                   {/* Player Profiles */}
                   <div className="flex items-center gap-6">
                     <div className="relative">
-                      <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-xl font-medium text-white/80">
-                        {players[0].name[0]}
+                      {/* Score Display */}
+                      <div className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
+                        <div className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent drop-shadow-[0_0_15px_rgba(168,85,247,0.5)]">
+                          {players[0]?.score || 0}
+                        </div>
                       </div>
+                      <Tooltip content={players[0]?.name || 'Unknown Player'}>
+                        <div className="rounded-full">
+                          <Avatar
+                            src={players[0]?.avatar_url}
+                            name={players[0]?.name || '?'}
+                            size="xl"
+                            className={cn(
+                              'ring-4 transition-all duration-300',
+                              currentTurn === 0
+                                ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
+                                : 'ring-white/20'
+                            )}
+                          />
+                        </div>
+                      </Tooltip>
                       <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-                        <div className="mt-14 text-white/60 text-sm">{players[0].elo}</div>
+                        <div className="mt-2 text-white/80 text-sm font-medium bg-white/5 px-2 py-0.5 rounded-md backdrop-blur-sm border border-white/10">
+                          {isLoadingPlayers ? '...' : (players[0]?.elo || '1000')}
+                        </div>
                       </div>
                     </div>
                     
-                    <span className="text-white/40 text-xl font-light">VS</span>
+                    <span className="text-white/40 text-2xl font-light">VS</span>
                     
                     <div className="relative">
-                      <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-xl font-medium text-white/80">
-                        {players[1].name[0]}
+                      {/* Score Display */}
+                      <div className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
+                        <div className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent drop-shadow-[0_0_15px_rgba(168,85,247,0.5)]">
+                          {players[1]?.score || 0}
+                        </div>
                       </div>
+                      <Tooltip content={players[1]?.name || 'Unknown Player'}>
+                        <div className="rounded-full">
+                          <Avatar
+                            src={players[1]?.avatar_url}
+                            name={players[1]?.name || '?'}
+                            size="xl"
+                            className={cn(
+                              'ring-4 transition-all duration-300',
+                              currentTurn === 1
+                                ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
+                                : 'ring-white/20'
+                            )}
+                          />
+                        </div>
+                      </Tooltip>
                       <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-                        <div className="mt-14 text-white/60 text-sm">{players[1].elo}</div>
+                        <div className="mt-2 text-white/80 text-sm font-medium bg-white/5 px-2 py-0.5 rounded-md backdrop-blur-sm border border-white/10">
+                          {isLoadingPlayers ? '...' : (players[1]?.elo || '1000')}
+                        </div>
                       </div>
                     </div>
                   </div>
