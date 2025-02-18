@@ -570,7 +570,7 @@ export default function GamePage({ params }: GamePageProps) {
           {/* Main Content */}
           <div className="flex-1 flex flex-col h-screen">
             {/* Word Chain - Scrollable */}
-            <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center">
+            <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-8 flex flex-col items-center justify-center">
               <div className="text-center mb-6">
               </div>
               <div className="flex flex-wrap items-start gap-y-4 justify-center w-full">
