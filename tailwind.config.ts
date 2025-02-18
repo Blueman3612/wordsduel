@@ -35,13 +35,19 @@ const config: Config = {
           '0%': { transform: 'scale(1)', opacity: '0.5' },
           '50%': { transform: 'scale(1.05)', opacity: '0.8' },
           '100%': { transform: 'scale(1)', opacity: '0.5' }
+        },
+        scoreUpdate: {
+          '0%': { transform: 'scale(1)' },
+          '50%': { transform: 'scale(1.2)' },
+          '100%': { transform: 'scale(1)' }
         }
       },
       animation: {
         shake: 'shake 0.5s ease-in-out',
         'fade-in': 'fade-in 0.2s ease-out',
         flash: 'flash 1s ease-in-out',
-        'pulse-ring': 'pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+        'pulse-ring': 'pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        scoreUpdate: 'scoreUpdate 0.5s ease-out'
       },
     },
   },

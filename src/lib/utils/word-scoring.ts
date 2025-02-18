@@ -9,20 +9,16 @@ const SCORING_WEIGHTS = {
     EXPONENT: 1,        // Power to raise length to (2 = quadratic scaling)
   },
   
-  // Unique letters bonus
-  UNIQUE_LETTERS: {
-    BASE_POINTS: 1,    // Points per unique letter
-  },
-  
   // Levenshtein distance (word difference) bonus
   LEVENSHTEIN: {
-    BASE_POINTS: 1,    // Base points for maximum difference
+    BASE_POINTS: 1.5,    // Base points for maximum difference
     EXPONENT: 2,        // How quickly the bonus scales with difference (higher = more reward for different words)
   },
   
   // Letter rarity bonus
   RARITY: {
-    MULTIPLIER: 0.1,     // How much to multiply the final rarity score by
+    MULTIPLIER: 0.00003,     // How much to multiply the final rarity score by
+    EXPONENT: 5,        // Power to raise rarity to (higher = more reward for rare letters)
     LETTER_WEIGHTS: {   // Individual letter weights based on English frequency
       A: 7.8,  B: 2.0,  C: 4.0,  D: 3.8,  E: 11.0, F: 1.4,
       G: 3.0,  H: 2.3,  I: 8.6,  J: 0.21, K: 0.97, L: 5.3,
@@ -71,9 +67,9 @@ export function calculateLevenshteinDistance(a: string, b: string): number {
 interface ScoringFactors {
   wordLength: number
   levenDistance: number
-  uniqueLetters: number
   previousWordLength: number
   rarityBonus: number
+  isFirstWord: boolean
 }
 
 /**
@@ -83,24 +79,23 @@ interface ScoringFactors {
  * 1. Word Length: (length ^ EXPONENT) * LENGTH.MULTIPLIER
  *    - Rewards longer words with exponential scaling
  * 
- * 2. Unique Letters: uniqueLetters * UNIQUE_LETTERS.BASE_POINTS
- *    - Rewards using diverse letters
- * 
- * 3. Levenshtein Distance: exp(normalizedDistance * LEVENSHTEIN.EXPONENT) * LEVENSHTEIN.BASE_POINTS
+ * 2. Levenshtein Distance: exp(normalizedDistance * LEVENSHTEIN.EXPONENT) * LEVENSHTEIN.BASE_POINTS
  *    - Rewards words that are more different from the previous word
  *    - Normalized by the length of the longer word
+ *    - Only applies if not the first word
  * 
- * 4. Letter Rarity: sum(12 - letterFrequency) * RARITY.MULTIPLIER
- *    - Rewards using rare letters
+ * 3. Letter Rarity: sum((12 - letterFrequency)^EXPONENT) * RARITY.MULTIPLIER
+ *    - Rewards using rare letters with exponential scaling
  *    - 12 - frequency gives higher scores to rarer letters
+ *    - Exponential scaling makes rare letters much more valuable
  */
 export function calculateWordScore(factors: ScoringFactors): number {
   const {
     wordLength,
     levenDistance,
-    uniqueLetters,
     previousWordLength,
-    rarityBonus
+    rarityBonus,
+    isFirstWord
   } = factors
 
   // Length score (exponential scaling)
@@ -109,51 +104,43 @@ export function calculateWordScore(factors: ScoringFactors): number {
     SCORING_WEIGHTS.LENGTH.MULTIPLIER
   )
 
-  // Unique letters bonus (linear scaling)
-  const uniqueLetterBonus = Math.round(
-    uniqueLetters * SCORING_WEIGHTS.UNIQUE_LETTERS.BASE_POINTS
-  )
-
   // Levenshtein distance bonus (exponential scaling)
-  const maxPossibleDistance = Math.max(wordLength, previousWordLength)
-  const normalizedLevenDistance = levenDistance / maxPossibleDistance
-  const levenBonus = Math.round(
-    Math.exp(normalizedLevenDistance * SCORING_WEIGHTS.LEVENSHTEIN.EXPONENT) * 
-    SCORING_WEIGHTS.LEVENSHTEIN.BASE_POINTS
-  )
+  let levenBonus = 0
+  if (!isFirstWord) {
+    const maxPossibleDistance = Math.max(wordLength, previousWordLength)
+    const normalizedLevenDistance = levenDistance / maxPossibleDistance
+    levenBonus = Math.round(
+      Math.exp(normalizedLevenDistance * SCORING_WEIGHTS.LEVENSHTEIN.EXPONENT) * 
+      SCORING_WEIGHTS.LEVENSHTEIN.BASE_POINTS
+    )
+  }
 
-  // Letter rarity bonus
+  // Letter rarity bonus (exponential scaling)
   const rarityScore = Math.round(rarityBonus * SCORING_WEIGHTS.RARITY.MULTIPLIER)
 
-  return lengthScore + uniqueLetterBonus + levenBonus + rarityScore
-}
-
-/**
- * Helper function to count unique letters in a word
- */
-export function countUniqueLetters(word: string): number {
-  return new Set(word.toLowerCase()).size
+  return lengthScore + levenBonus + rarityScore
 }
 
 /**
  * Calculate the complete score for a played word
  */
-export function scoreWord(currentWord: string, previousWord: string): number {
-  const levenDistance = calculateLevenshteinDistance(currentWord, previousWord)
+export function scoreWord(currentWord: string, previousWord: string | null): number {
+  const levenDistance = previousWord ? calculateLevenshteinDistance(currentWord, previousWord) : 0
   
-  // Calculate rarity bonus
+  // Calculate rarity bonus with exponential scaling
   const rarityBonus = currentWord.toUpperCase().split('')
     .reduce((sum, letter) => {
       const frequency = SCORING_WEIGHTS.RARITY.LETTER_WEIGHTS[letter as Letter] || 5
-      return sum + (12 - frequency)
+      // Apply exponential scaling to the rarity value
+      return sum + Math.pow(12 - frequency, SCORING_WEIGHTS.RARITY.EXPONENT)
     }, 0)
   
   const factors: ScoringFactors = {
     wordLength: currentWord.length,
     levenDistance,
-    uniqueLetters: countUniqueLetters(currentWord),
-    previousWordLength: previousWord.length,
-    rarityBonus
+    previousWordLength: previousWord?.length || 0,
+    rarityBonus,
+    isFirstWord: !previousWord
   }
 
   return calculateWordScore(factors)

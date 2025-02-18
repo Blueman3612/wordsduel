@@ -12,7 +12,8 @@ import { Avatar } from '@/components/ui/Avatar'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils/cn'
 import { RealtimeChannel } from '@supabase/supabase-js'
-import { countUniqueLetters, calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
+import { calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
+import { AnimatedScore } from '@/components/game/AnimatedScore'
 
 interface WordCard {
   word: string
@@ -22,7 +23,6 @@ interface WordCard {
   score?: number
   scoreBreakdown?: {
     lengthScore: number
-    uniqueLetterBonus: number
     levenBonus: number
     rarityBonus: number
   }
@@ -391,29 +391,44 @@ export default function GamePage({ params }: GamePageProps) {
       let wordScore = undefined
       let scoreBreakdown = undefined
       if (isValid) {
-        // Get the previous word for Levenshtein distance calculation
-        const previousWord = words.length > 0 ? words[words.length - 1].word : ''
-        wordScore = scoreWord(trimmedWord, previousWord)
+        // Get the last valid word for Levenshtein distance calculation
+        const lastValidWord = words.filter(w => !w.isInvalid).pop()?.word || null
+        wordScore = scoreWord(trimmedWord, lastValidWord)
         
-        // Calculate individual components for the breakdown
-        const levenDistance = calculateLevenshteinDistance(trimmedWord, previousWord)
-        const uniqueLetters = countUniqueLetters(trimmedWord)
-        const maxPossibleDistance = Math.max(trimmedWord.length, previousWord.length)
-        const normalizedLevenDistance = levenDistance / maxPossibleDistance
-        
-        // Calculate rarity bonus
-        const rarityBonus = trimmedWord.toUpperCase().split('')
-          .reduce((sum, letter) => {
-            const frequency = SCORING_CONFIG.letterRarityWeights[letter as Letter] || 5
-            return sum + (12 - frequency)
-          }, 0)
+        if (lastValidWord) {
+          const levenDistance = calculateLevenshteinDistance(trimmedWord, lastValidWord)
+          const maxPossibleDistance = Math.max(trimmedWord.length, lastValidWord.length)
+          const normalizedLevenDistance = levenDistance / maxPossibleDistance
+          
+          // Calculate rarity bonus with exponential scaling
+          const rarityBonus = trimmedWord.toUpperCase().split('')
+            .reduce((sum, letter) => {
+              const frequency = SCORING_CONFIG.letterRarityWeights[letter as Letter] || 5
+              // Apply exponential scaling to the rarity value
+              return sum + Math.pow(12 - frequency, SCORING_WEIGHTS.RARITY.EXPONENT)
+            }, 0)
 
-        // Calculate breakdown components using the same weights as scoreWord
-        scoreBreakdown = {
-          lengthScore: Math.round(Math.pow(trimmedWord.length, SCORING_WEIGHTS.LENGTH.EXPONENT) * SCORING_WEIGHTS.LENGTH.MULTIPLIER),
-          uniqueLetterBonus: Math.round(uniqueLetters * SCORING_WEIGHTS.UNIQUE_LETTERS.BASE_POINTS),
-          levenBonus: Math.round(Math.exp(normalizedLevenDistance * SCORING_WEIGHTS.LEVENSHTEIN.EXPONENT) * SCORING_WEIGHTS.LEVENSHTEIN.BASE_POINTS),
-          rarityBonus: Math.round(rarityBonus * SCORING_WEIGHTS.RARITY.MULTIPLIER)
+          // Calculate breakdown components using the same weights as scoreWord
+          scoreBreakdown = {
+            lengthScore: Math.round(Math.pow(trimmedWord.length, SCORING_WEIGHTS.LENGTH.EXPONENT) * SCORING_WEIGHTS.LENGTH.MULTIPLIER),
+            levenBonus: Math.round(Math.exp(normalizedLevenDistance * SCORING_WEIGHTS.LEVENSHTEIN.EXPONENT) * SCORING_WEIGHTS.LEVENSHTEIN.BASE_POINTS),
+            rarityBonus: Math.round(rarityBonus * SCORING_WEIGHTS.RARITY.MULTIPLIER)
+          }
+        } else {
+          // First word - no Levenshtein bonus
+          // Calculate rarity bonus with exponential scaling
+          const rarityBonus = trimmedWord.toUpperCase().split('')
+            .reduce((sum, letter) => {
+              const frequency = SCORING_CONFIG.letterRarityWeights[letter as Letter] || 5
+              // Apply exponential scaling to the rarity value
+              return sum + Math.pow(12 - frequency, SCORING_WEIGHTS.RARITY.EXPONENT)
+            }, 0)
+
+          scoreBreakdown = {
+            lengthScore: Math.round(Math.pow(trimmedWord.length, SCORING_WEIGHTS.LENGTH.EXPONENT) * SCORING_WEIGHTS.LENGTH.MULTIPLIER),
+            levenBonus: 0,
+            rarityBonus: Math.round(rarityBonus * SCORING_WEIGHTS.RARITY.MULTIPLIER)
+          }
         }
       }
 
@@ -557,9 +572,6 @@ export default function GamePage({ params }: GamePageProps) {
             {/* Word Chain - Scrollable */}
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center">
               <div className="text-center mb-6">
-                <p className="text-gray-400 text-lg font-medium mb-6">
-                  Play an antonym to eliminate a letter for the opponent!
-                </p>
               </div>
               <div className="flex flex-wrap items-start gap-y-4 justify-center w-full">
                 {words.map((wordCard, index) => (
@@ -591,10 +603,6 @@ export default function GamePage({ params }: GamePageProps) {
                                     <div className="flex justify-between items-center">
                                       <span className="text-white/70">Length bonus</span>
                                       <span className="font-medium">+{wordCard.scoreBreakdown?.lengthScore || 0}</span>
-                                    </div>
-                                    <div className="flex justify-between items-center">
-                                      <span className="text-white/70">Unique letters</span>
-                                      <span className="font-medium">+{wordCard.scoreBreakdown?.uniqueLetterBonus || 0}</span>
                                     </div>
                                     <div className="flex justify-between items-center">
                                       <span className="text-white/70">Difference bonus</span>
@@ -755,9 +763,7 @@ export default function GamePage({ params }: GamePageProps) {
                     <div className="relative">
                       {/* Score Display */}
                       <div className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-                        <div className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent drop-shadow-[0_0_15px_rgba(168,85,247,0.5)]">
-                          {players[0]?.score || 0}
-                        </div>
+                        <AnimatedScore value={players[0]?.score || 0} />
                       </div>
                       <Tooltip content={players[0]?.name || 'Unknown Player'}>
                         <div className="rounded-full">
@@ -786,9 +792,7 @@ export default function GamePage({ params }: GamePageProps) {
                     <div className="relative">
                       {/* Score Display */}
                       <div className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-                        <div className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent drop-shadow-[0_0_15px_rgba(168,85,247,0.5)]">
-                          {players[1]?.score || 0}
-                        </div>
+                        <AnimatedScore value={players[1]?.score || 0} />
                       </div>
                       <Tooltip content={players[1]?.name || 'Unknown Player'}>
                         <div className="rounded-full">
