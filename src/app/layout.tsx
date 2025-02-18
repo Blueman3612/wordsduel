@@ -5,6 +5,7 @@ import { ToastProvider } from "@/lib/context/toast";
 import { Background } from "@/components/layout/Background"
 import { NavigationProvider } from '@/lib/context/navigation'
 import { AnimatedLayout } from '@/components/layout/AnimatedLayout'
+import { VisibilityHandler } from '@/components/layout/VisibilityHandler'
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -25,9 +26,11 @@ export default function RootLayout({
           <ToastProvider>
             <NavigationProvider>
               <Background />
-              <AnimatedLayout>
-                {children}
-              </AnimatedLayout>
+              <VisibilityHandler>
+                <AnimatedLayout>
+                  {children}
+                </AnimatedLayout>
+              </VisibilityHandler>
             </NavigationProvider>
           </ToastProvider>
         </AuthProvider>
