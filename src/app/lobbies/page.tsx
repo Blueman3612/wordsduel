@@ -126,21 +126,31 @@ export default function LobbiesPage() {
         },
         async () => {
           // Check if user is in a full lobby
-          const { data: userLobby } = await supabase
+          const { data: userLobbies, error: userLobbyError } = await supabase
             .from('lobby_members')
             .select('lobby_id')
             .eq('user_id', user.id)
-            .single()
 
-          if (userLobby) {
-            const { data: lobby } = await supabase
+          if (userLobbyError) {
+            console.error('Error checking user lobbies:', userLobbyError)
+            return
+          }
+
+          if (userLobbies && userLobbies.length > 0) {
+            const userLobby = userLobbies[0] // Take the first lobby if user is in multiple
+            const { data: lobbies, error: lobbyError } = await supabase
               .from('lobbies')
               .select('id, max_players, status')
               .eq('id', userLobby.lobby_id)
               .eq('status', 'waiting')
-              .single()
 
-            if (lobby) {
+            if (lobbyError) {
+              console.error('Error checking lobby:', lobbyError)
+              return
+            }
+
+            if (lobbies && lobbies.length > 0) {
+              const lobby = lobbies[0]
               const { count } = await supabase
                 .from('lobby_members')
                 .select('*', { count: 'exact', head: true })
@@ -174,19 +184,19 @@ export default function LobbiesPage() {
       setIsCreating(true)
 
       // Check if user already has a lobby
-      const { data: existingLobby } = await supabase
+      const { data: existingLobbies, error: existingError } = await supabase
         .from('lobbies')
         .select('id')
         .eq('host_id', user.id)
         .eq('status', 'waiting')
-        .single()
 
-      if (existingLobby) {
+      if (existingError) throw existingError
+      if (existingLobbies && existingLobbies.length > 0) {
         showToast('You already have an active lobby', 'error')
         return
       }
 
-      const { data: lobby, error: createError } = await supabase
+      const { data: lobbies, error: createError } = await supabase
         .from('lobbies')
         .insert({
           name: newLobbyName.trim(),
@@ -195,9 +205,13 @@ export default function LobbiesPage() {
           password: lobbyPassword.trim() || null
         })
         .select()
-        .single()
 
       if (createError) throw createError
+      if (!lobbies || lobbies.length === 0) {
+        throw new Error('No lobby was created')
+      }
+
+      const lobby = lobbies[0]
 
       // Join the lobby as host
       const { error: joinError } = await supabase
@@ -266,14 +280,18 @@ export default function LobbiesPage() {
       setIsJoining(true)
 
       // Verify password
-      const { data: lobby, error: verifyError } = await supabase
+      const { data: lobbies, error: verifyError } = await supabase
         .from('lobbies')
         .select('password')
         .eq('id', joiningLobby.id)
-        .single()
 
       if (verifyError) throw verifyError
+      if (!lobbies || lobbies.length === 0) {
+        showToast('Lobby not found', 'error')
+        return
+      }
 
+      const lobby = lobbies[0]
       if (lobby.password !== joinPassword) {
         showToast('Incorrect password', 'error')
         return

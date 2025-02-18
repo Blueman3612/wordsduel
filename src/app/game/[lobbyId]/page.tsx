@@ -214,11 +214,15 @@ export default function GamePage({ params }: GamePageProps) {
         .select('*')
         .eq('lobby_id', lobbyId)
         .eq('user_id', user.id)
-        .single()
 
-      if (error || !data) {
+      if (error) {
+        showToast('Error checking lobby membership', 'error')
+        window.location.href = '/lobbies'
+        return
+      }
+
+      if (!data || data.length === 0) {
         showToast('You are not a member of this lobby', 'error')
-        // Redirect to lobbies page if not a member
         window.location.href = '/lobbies'
         return
       }

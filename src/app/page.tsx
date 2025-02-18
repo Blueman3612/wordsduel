@@ -211,39 +211,42 @@ export default function HomePage() {
       setIsQuickPlaying(true)
 
       // Check if user is already in any lobby
-      const { data: existingMembership } = await supabase
+      const { data: existingMemberships, error: membershipError } = await supabase
         .from('lobby_members')
         .select('lobby_id')
         .eq('user_id', user.id)
-        .single()
 
-      if (existingMembership) {
+      if (membershipError) throw membershipError
+      if (existingMemberships && existingMemberships.length > 0) {
         showToast('You are already in a lobby', 'error')
         router.push('/lobbies')
         return
       }
 
       // First check if user already has a lobby
-      const { data: existingLobby } = await supabase
+      const { data: existingLobbies, error: lobbyError } = await supabase
         .from('lobbies')
         .select('id')
         .eq('host_id', user.id)
         .eq('status', 'waiting')
-        .single()
 
-      if (existingLobby) {
+      if (lobbyError) throw lobbyError
+      if (existingLobbies && existingLobbies.length > 0) {
         router.push('/lobbies')
         return
       }
 
       // Look for an available public lobby
-      const { data: availableLobby } = await supabase
+      const { data: availableLobbies, error: availableError } = await supabase
         .from('lobbies')
         .select('id, max_players')
         .eq('status', 'waiting')
         .is('password', null)
         .order('created_at', { ascending: true })
-        .single()
+
+      if (availableError) throw availableError
+      
+      const availableLobby = availableLobbies && availableLobbies.length > 0 ? availableLobbies[0] : null
 
       if (availableLobby) {
         // Check if lobby is full
