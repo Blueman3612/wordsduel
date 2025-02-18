@@ -41,13 +41,6 @@ interface Player {
   avatar_url?: string | null
 }
 
-interface Profile {
-  id: string
-  display_name: string
-  avatar_url: string | null
-  elo: number
-}
-
 interface GameWord {
   id: string
   created_at: string
@@ -345,7 +338,7 @@ export default function GamePage({ params }: GamePageProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const trimmedWord = word.trim()
+    const trimmedWord = word.trim().toLowerCase()
     if (!trimmedWord || !players.length || !user) return
     
     // Clear input immediately
@@ -388,7 +381,7 @@ export default function GamePage({ params }: GamePageProps) {
       const { data: dictData, error: dictError } = await supabase
         .from('words')
         .select('part_of_speech, definitions, phonetics')
-        .eq('word', trimmedWord.toLowerCase())
+        .eq('word', trimmedWord)
 
       // Word is valid if we have any matching entries
       const isValid = !dictError && dictData && dictData.length > 0
@@ -629,10 +622,10 @@ export default function GamePage({ params }: GamePageProps) {
                         {wordCard.isInvalid ? (
                           <div className="flex items-center gap-2">
                             <X className="w-6 h-6 text-red-400" />
-                            <p className="text-2xl font-medium text-white/60 line-through">{wordCard.word}</p>
+                            <p className="text-2xl font-medium text-white/60 line-through">{wordCard.word.toLowerCase()}</p>
                           </div>
                         ) : (
-                          <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                          <p className="text-2xl font-medium text-white">{wordCard.word.toLowerCase()}</p>
                         )}
                       </div>
 
@@ -661,7 +654,7 @@ export default function GamePage({ params }: GamePageProps) {
                           `}
                         >
                           <div className="relative z-10">
-                            <p className="text-2xl font-medium text-white">{wordCard.word}</p>
+                            <p className="text-2xl font-medium text-white">{wordCard.word.toLowerCase()}</p>
                             {/* Report Button */}
                             <button
                               onClick={() => setReportedWord(wordCard.word)}
