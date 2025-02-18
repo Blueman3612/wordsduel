@@ -11,12 +11,21 @@ import { useToast } from '@/lib/context/toast'
 import { Avatar } from '@/components/ui/Avatar'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils/cn'
+import { RealtimeChannel } from '@supabase/supabase-js'
+import { calculateWordScore, countUniqueLetters, calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
 
 interface WordCard {
   word: string
   player: string
   timestamp: number
   isInvalid?: boolean
+  score?: number
+  scoreBreakdown?: {
+    lengthScore: number
+    uniqueLetterBonus: number
+    levenBonus: number
+    rarityBonus: number
+  }
   dictionary?: {
     partOfSpeech?: string
     definition?: string
@@ -44,11 +53,38 @@ interface LobbyMember {
   profiles: Profile
 }
 
+interface GameWord {
+  id: string
+  created_at: string
+  lobby_id: string
+  player_id: string
+  word: string
+  is_valid: boolean
+  score?: number
+  score_breakdown?: {
+    lengthScore: number
+    uniqueLetterBonus: number
+    levenBonus: number
+    rarityBonus: number
+  }
+  part_of_speech?: string
+  definition?: string
+  phonetics?: string
+}
+
 interface GamePageProps {
   params: Promise<{
     lobbyId: string
   }>
 }
+
+// Scoring weights - can be adjusted to taste
+const SCORING_CONFIG = {
+  letterRarityWeights: SCORING_WEIGHTS.RARITY.LETTER_WEIGHTS
+} as const
+
+type LetterRarity = typeof SCORING_CONFIG.letterRarityWeights
+type Letter = keyof LetterRarity
 
 export default function GamePage({ params }: GamePageProps) {
   const { lobbyId } = use(params)
@@ -65,6 +101,7 @@ export default function GamePage({ params }: GamePageProps) {
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
+  const channelRef = useRef<RealtimeChannel | null>(null)
 
   // Auto-scroll to bottom when words change
   useEffect(() => {
@@ -186,14 +223,142 @@ export default function GamePage({ params }: GamePageProps) {
     checkLobbyMembership()
   }, [user, lobbyId, showToast])
 
+  // Subscribe to word updates
+  useEffect(() => {
+    if (!lobbyId) return
+
+    // Subscribe to word changes
+    channelRef.current = supabase
+      .channel(`game:${lobbyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'game_words',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        (payload) => {
+          const newWord = payload.new as GameWord
+          if (newWord) {
+            console.log('New word data:', newWord)
+            console.log('Score breakdown:', newWord.score_breakdown)
+            
+            // Find player who played the word
+            const player = players.find(p => p.id === newWord.player_id)
+            
+            const wordCard = {
+              word: newWord.word,
+              player: player?.name || 'Unknown',
+              timestamp: Date.parse(newWord.created_at),
+              isInvalid: !newWord.is_valid,
+              score: newWord.score,
+              scoreBreakdown: newWord.score_breakdown,
+              dictionary: {
+                partOfSpeech: newWord.part_of_speech,
+                definition: newWord.definition,
+                phonetics: newWord.phonetics
+              }
+            }
+            console.log('Word card data:', wordCard)
+            
+            setWords(prev => [...prev, wordCard])
+            
+            // Update player score if score exists and is valid
+            if (typeof newWord.score === 'number' && !isNaN(newWord.score) && newWord.is_valid) {
+              setPlayers(prev => {
+                const updatedPlayers = [...prev]
+                const playerIndex = updatedPlayers.findIndex(p => p.id === newWord.player_id)
+                if (playerIndex !== -1) {
+                  const currentScore = updatedPlayers[playerIndex].score || 0
+                  updatedPlayers[playerIndex] = {
+                    ...updatedPlayers[playerIndex],
+                    score: currentScore + newWord.score
+                  }
+                }
+                return updatedPlayers
+              })
+            }
+
+            // Update turn if word was valid
+            if (newWord.is_valid) {
+              setCurrentTurn(prev => prev === 0 ? 1 : 0)
+            }
+          }
+        }
+      )
+      .subscribe()
+
+    // Fetch existing words
+    const fetchExistingWords = async () => {
+      const { data: gameWords, error } = await supabase
+        .from('game_words')
+        .select('*')
+        .eq('lobby_id', lobbyId)
+        .order('created_at', { ascending: true })
+
+      if (error) {
+        console.error('Error fetching words:', error)
+        return
+      }
+
+      if (gameWords) {
+        // Calculate total scores for each player
+        const playerScores: { [key: string]: number } = {}
+        gameWords.forEach((word: GameWord) => {
+          if (word.is_valid && word.score) {
+            playerScores[word.player_id] = (playerScores[word.player_id] || 0) + word.score
+          }
+        })
+
+        // Update players with their total scores
+        setPlayers(prev => prev.map(player => ({
+          ...player,
+          score: playerScores[player.id] || 0
+        })))
+
+        const formattedWords = gameWords.map((word: GameWord) => {
+          const player = players.find(p => p.id === word.player_id)
+          return {
+            word: word.word,
+            player: player?.name || 'Unknown',
+            timestamp: Date.parse(word.created_at),
+            isInvalid: !word.is_valid,
+            score: word.score,
+            scoreBreakdown: word.score_breakdown,
+            dictionary: {
+              partOfSpeech: word.part_of_speech,
+              definition: word.definition,
+              phonetics: word.phonetics
+            }
+          }
+        })
+        setWords(formattedWords)
+
+        // Set current turn based on number of valid words
+        const validWordsCount = gameWords.filter(w => w.is_valid).length
+        setCurrentTurn(validWordsCount % 2)
+      }
+    }
+
+    fetchExistingWords()
+
+    return () => {
+      channelRef.current?.unsubscribe()
+    }
+  }, [lobbyId, players])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const trimmedWord = word.trim()
-    if (!trimmedWord || !players.length) return
+    if (!trimmedWord || !players.length || !user) return
+    
+    // Clear input immediately
+    setWord('')
 
     // Verify it's the player's turn
-    const isPlayerOne = user?.id === players[0]?.id
-    const isPlayerTwo = user?.id === players[1]?.id
+    const isPlayerOne = user.id === players[0]?.id
+    const isPlayerTwo = user.id === players[1]?.id
     const isPlayersTurn = (currentTurn === 0 && isPlayerOne) || (currentTurn === 1 && isPlayerTwo)
 
     if (!isPlayersTurn) {
@@ -211,45 +376,82 @@ export default function GamePage({ params }: GamePageProps) {
     setInvalidLetters([])
 
     try {
-      const { data, error } = await supabase
+      // First check if word has already been played in this lobby
+      const { data: existingWord, error: existingError } = await supabase
+        .from('game_words')
+        .select('id')
+        .eq('lobby_id', lobbyId)
+        .eq('word', trimmedWord)
+        .single()
+
+      if (existingWord) {
+        showToast('This word has already been played!', 'error')
+        return
+      }
+
+      // Check if word exists in dictionary
+      const { data: dictData, error: dictError } = await supabase
         .from('words')
         .select('part_of_speech, definitions, phonetics')
         .eq('word', trimmedWord.toLowerCase())
 
-      if (error || !data || data.length === 0) {
-        setWords(prev => [...prev, {
+      // Word is valid if we have any matching entries
+      const isValid = !dictError && dictData && dictData.length > 0
+      const firstEntry = dictData?.[0]
+
+      // Calculate word score if valid
+      let wordScore = undefined
+      let scoreBreakdown = undefined
+      if (isValid) {
+        // Get the previous word for Levenshtein distance calculation
+        const previousWord = words.length > 0 ? words[words.length - 1].word : ''
+        wordScore = scoreWord(trimmedWord, previousWord)
+        
+        // Calculate individual components for the breakdown
+        const levenDistance = calculateLevenshteinDistance(trimmedWord, previousWord)
+        const uniqueLetters = countUniqueLetters(trimmedWord)
+        const maxPossibleDistance = Math.max(trimmedWord.length, previousWord.length)
+        const normalizedLevenDistance = levenDistance / maxPossibleDistance
+        
+        // Calculate rarity bonus
+        const rarityBonus = trimmedWord.toUpperCase().split('')
+          .reduce((sum, letter) => {
+            const frequency = SCORING_CONFIG.letterRarityWeights[letter as Letter] || 5
+            return sum + (12 - frequency)
+          }, 0)
+
+        // Calculate breakdown components using the same weights as scoreWord
+        scoreBreakdown = {
+          lengthScore: Math.round(Math.pow(trimmedWord.length, SCORING_WEIGHTS.LENGTH.EXPONENT) * SCORING_WEIGHTS.LENGTH.MULTIPLIER),
+          uniqueLetterBonus: Math.round(uniqueLetters * SCORING_WEIGHTS.UNIQUE_LETTERS.BASE_POINTS),
+          levenBonus: Math.round(Math.exp(normalizedLevenDistance * SCORING_WEIGHTS.LEVENSHTEIN.EXPONENT) * SCORING_WEIGHTS.LEVENSHTEIN.BASE_POINTS),
+          rarityBonus: Math.round(rarityBonus * SCORING_WEIGHTS.RARITY.MULTIPLIER)
+        }
+      }
+
+      // Insert word into game_words
+      const { error: insertError } = await supabase
+        .from('game_words')
+        .insert({
+          lobby_id: lobbyId,
           word: trimmedWord,
-          player: players[currentTurn]?.name || 'Unknown',
-          timestamp: Date.now(),
-          isInvalid: true
-        }])
-      } else {
-        // Use the first entry's data (we know the word is valid if we have any entries)
-        const firstEntry = data[0]
-        setWords(prev => [...prev, {
-          word: trimmedWord,
-          player: players[currentTurn]?.name || 'Unknown',
-          timestamp: Date.now(),
-          dictionary: {
-            partOfSpeech: firstEntry.part_of_speech,
-            definition: firstEntry.definitions[0],
-            phonetics: firstEntry.phonetics
-          }
-        }])
-        // Switch turns after a valid word
-        setCurrentTurn(prev => prev === 0 ? 1 : 0)
+          player_id: user.id,
+          is_valid: isValid,
+          score: wordScore,
+          score_breakdown: scoreBreakdown,
+          part_of_speech: firstEntry?.part_of_speech,
+          definition: firstEntry?.definitions?.[0],
+          phonetics: firstEntry?.phonetics
+        })
+
+      if (insertError) {
+        console.error('Error inserting word:', insertError)
+        showToast('Error submitting word', 'error')
       }
     } catch (error) {
-      console.error('Error checking word:', error)
-      setWords(prev => [...prev, {
-        word: trimmedWord,
-        player: players[currentTurn]?.name || 'Unknown',
-        timestamp: Date.now(),
-        isInvalid: true
-      }])
+      console.error('Error submitting word:', error)
+      showToast('Error submitting word', 'error')
     }
-    
-    setWord('')
   }
 
   return (
@@ -375,13 +577,13 @@ export default function GamePage({ params }: GamePageProps) {
                 {words.map((wordCard, index) => (
                   <div key={index} className="flex items-center">
                     <div 
-                      className="relative group" 
+                      className="relative group overflow-visible" 
                       onMouseEnter={updateExpandDirection}
                     >
                       {/* Base Card */}
                       <div 
                         className={`
-                          relative bg-white/10 backdrop-blur-md rounded-2xl p-4 shadow-lg
+                          relative bg-white/10 backdrop-blur-md rounded-2xl p-4 shadow-lg overflow-visible
                           ${wordCard.isInvalid 
                             ? 'border-2 border-red-500/40 shadow-[0_0_10px_-3px_rgba(239,68,68,0.3)] bg-red-500/10' 
                             : wordCard.player !== players[0]?.name 
@@ -390,6 +592,45 @@ export default function GamePage({ params }: GamePageProps) {
                           }
                         `}
                       >
+                        {/* Word score tooltip */}
+                        {wordCard.score && wordCard.score > 0 && !wordCard.isInvalid && (
+                          <div className="absolute -right-2 -top-2 z-[150] overflow-visible">
+                            <Tooltip
+                              content={
+                                <div className="w-52 space-y-2">
+                                  <p className="font-medium text-base border-b border-white/20 pb-2">Score Breakdown</p>
+                                  <div className="space-y-1.5">
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-white/70">Length bonus</span>
+                                      <span className="font-medium">+{wordCard.scoreBreakdown?.lengthScore || 0}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-white/70">Unique letters</span>
+                                      <span className="font-medium">+{wordCard.scoreBreakdown?.uniqueLetterBonus || 0}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-white/70">Difference bonus</span>
+                                      <span className="font-medium">+{wordCard.scoreBreakdown?.levenBonus || 0}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-white/70">Rarity bonus</span>
+                                      <span className="font-medium">+{wordCard.scoreBreakdown?.rarityBonus || 0}</span>
+                                    </div>
+                                  </div>
+                                  <div className="border-t border-white/20 mt-2 pt-2 flex justify-between items-center">
+                                    <span className="font-medium">Total Score</span>
+                                    <span className="font-bold text-lg bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                                      +{wordCard.score}
+                                    </span>
+                                  </div>
+                                </div>
+                              }
+                              className="z-[200]"
+                            >
+                              <p className="text-white/60 font-medium text-sm mr-3 mt-2">+{wordCard.score}</p>
+                            </Tooltip>
+                          </div>
+                        )}
                         {wordCard.isInvalid ? (
                           <div className="flex items-center gap-2">
                             <X className="w-6 h-6 text-red-400" />
