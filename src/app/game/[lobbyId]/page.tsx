@@ -73,7 +73,6 @@ type Letter = keyof LetterRarity
 
 // Add these constants at the top of the file, after imports
 const INITIAL_TIME = 3 * 60 * 1000 // 3 minutes in milliseconds
-const INCREMENT = 5 * 1000 // 5 seconds in milliseconds
 const STORAGE_KEY_PREFIX = 'wordsduel_timer_' // Prefix for localStorage keys
 
 export default function GamePage({ params }: GamePageProps) {
@@ -189,7 +188,16 @@ export default function GamePage({ params }: GamePageProps) {
     const fetchLobbyMembers = async () => {
       setIsLoadingPlayers(true)
       try {
-        // First get the lobby members
+        // First get the lobby info to determine host
+        const { data: lobby, error: lobbyError } = await supabase
+          .from('lobbies')
+          .select('host_id')
+          .eq('id', lobbyId)
+          .single()
+
+        if (lobbyError) throw lobbyError
+
+        // Then get the lobby members
         const { data: members, error: membersError } = await supabase
           .from('lobby_members')
           .select('user_id')
@@ -211,7 +219,14 @@ export default function GamePage({ params }: GamePageProps) {
         if (profilesError) throw profilesError
 
         if (profiles) {
-          const formattedPlayers: Player[] = profiles.map(profile => ({
+          // Sort profiles to ensure host is always player 1
+          const sortedProfiles = profiles.sort((a, b) => {
+            if (a.id === lobby.host_id) return -1
+            if (b.id === lobby.host_id) return 1
+            return 0
+          })
+
+          const formattedPlayers: Player[] = sortedProfiles.map(profile => ({
             id: profile.id,
             name: profile.display_name,
             elo: profile.elo || 1200,
@@ -230,7 +245,7 @@ export default function GamePage({ params }: GamePageProps) {
     }
 
     fetchLobbyMembers()
-  }, [user, lobbyId, showToast, initializeGameState]) // Keep initializeGameState in dependencies
+  }, [user, lobbyId, showToast, initializeGameState])
 
   // Function to check for banned letters
   const checkBannedLetters = (word: string): string[] => {
@@ -403,7 +418,7 @@ export default function GamePage({ params }: GamePageProps) {
       console.log('Cleaning up subscription')
       channelRef.current?.unsubscribe()
     }
-  }, [lobbyId, user]) // Only depend on stable values
+  }, [lobbyId, user, showToast]) // Added showToast to dependency array
 
   // Load saved timer values after mount
   useEffect(() => {
@@ -538,27 +553,30 @@ export default function GamePage({ params }: GamePageProps) {
         )
 
         const processedWords: WordCard[] = gameWords.map(word => ({
-            word: word.word,
+          word: word.word,
           player: playerNames.get(word.player_id) || 'Unknown',
-            timestamp: Date.parse(word.created_at),
-            isInvalid: !word.is_valid,
-            score: word.score,
-            scoreBreakdown: word.score_breakdown,
-            dictionary: {
-              partOfSpeech: word.part_of_speech,
-              definition: word.definition,
-              phonetics: word.phonetics
-            }
+          timestamp: Date.parse(word.created_at),
+          isInvalid: !word.is_valid,
+          score: word.score,
+          scoreBreakdown: word.score_breakdown,
+          dictionary: {
+            partOfSpeech: word.part_of_speech,
+            definition: word.definition,
+            phonetics: word.phonetics
+          }
         }))
 
         setWords(processedWords)
         
-        // Set current turn based on the last valid word
-        const validWords = processedWords.filter(w => !w.isInvalid)
-        if (validWords.length > 0) {
-          const lastWord = validWords[validWords.length - 1]
-          const lastPlayer = players.findIndex(p => p.name === lastWord.player)
-          setCurrentTurn(lastPlayer === 0 ? 1 : 0)
+        // Get the current game state instead of calculating turn
+        const { data: gameState, error: gameStateError } = await supabase
+          .from('game_state')
+          .select('current_turn')
+          .eq('lobby_id', lobbyId)
+          .single()
+
+        if (!gameStateError && gameState) {
+          setCurrentTurn(gameState.current_turn)
         }
       }
     } catch (error) {
@@ -569,7 +587,7 @@ export default function GamePage({ params }: GamePageProps) {
         setIsInitialLoad(false)
       }
     }
-  }, [user, lobbyId, players, isInitialLoad])
+  }, [user, lobbyId, isInitialLoad])
 
   // Fetch initial game state after players are loaded
   useEffect(() => {
@@ -1035,7 +1053,16 @@ export default function GamePage({ params }: GamePageProps) {
                       <div className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
                         <AnimatedScore value={players[0]?.score || 0} />
                       </div>
-                      <Tooltip content={players[0]?.name || 'Unknown Player'}>
+                      <Tooltip 
+                        content={
+                          <div className="flex flex-col items-center text-center">
+                            <span>{players[0]?.name || 'Unknown Player'}</span>
+                            <span className="text-white/60 text-sm">
+                              {isLoadingPlayers ? '...' : (players[0]?.elo || '1000')}
+                            </span>
+                          </div>
+                        }
+                      >
                         <div className="rounded-full">
                           <Avatar
                             src={players[0]?.avatar_url}
@@ -1050,10 +1077,7 @@ export default function GamePage({ params }: GamePageProps) {
                           />
                         </div>
                       </Tooltip>
-                      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center flex flex-col gap-1">
-                        <div className="text-white/80 text-sm font-medium bg-white/5 px-2 py-0.5 rounded-md backdrop-blur-sm border border-white/10">
-                          {isLoadingPlayers ? '...' : (players[0]?.elo || '1000')}
-                        </div>
+                      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
                         <Timer 
                           timeLeft={player1Time} 
                           isActive={gameStarted && currentTurn === 0} 
@@ -1068,7 +1092,16 @@ export default function GamePage({ params }: GamePageProps) {
                       <div className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
                         <AnimatedScore value={players[1]?.score || 0} />
                       </div>
-                      <Tooltip content={players[1]?.name || 'Unknown Player'}>
+                      <Tooltip 
+                        content={
+                          <div className="flex flex-col items-center text-center">
+                            <span>{players[1]?.name || 'Unknown Player'}</span>
+                            <span className="text-white/60 text-sm">
+                              {isLoadingPlayers ? '...' : (players[1]?.elo || '1000')}
+                            </span>
+                          </div>
+                        }
+                      >
                         <div className="rounded-full">
                           <Avatar
                             src={players[1]?.avatar_url}
@@ -1083,10 +1116,7 @@ export default function GamePage({ params }: GamePageProps) {
                           />
                         </div>
                       </Tooltip>
-                      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center flex flex-col gap-1">
-                        <div className="text-white/80 text-sm font-medium bg-white/5 px-2 py-0.5 rounded-md backdrop-blur-sm border border-white/10">
-                          {isLoadingPlayers ? '...' : (players[1]?.elo || '1000')}
-                        </div>
+                      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
                         <Timer 
                           timeLeft={player2Time} 
                           isActive={gameStarted && currentTurn === 1}

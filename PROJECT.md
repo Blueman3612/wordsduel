@@ -10,14 +10,21 @@ Logobout is a real-time multiplayer word game where players take turns typing wo
    - Join an existing lobby
    - Quick play to auto-join/create a lobby
 3. Initial parameters are displayed (e.g., "at least 5 letters long", "singular non-proper noun")
-4. Players alternate turns:
+4. Players alternate turns with:
+   - 3-minute base timer per player
+   - 5-second increment per valid move
+   - Real-time timer synchronization
+5. Each turn:
    - Player types a word matching all parameters
    - Word is validated against Supabase dictionary
    - Word is checked for banned letters
-   - Valid word is added to the word chain with dictionary information
+   - Valid word is added to the word chain with:
+     - Dictionary information
+     - Score breakdown
+     - Visual styling based on player
    - Invalid words are marked and displayed with a strike-through
-5. Players can report words they believe are invalid
-6. Game continues until win condition is met
+6. Players can report words they believe are invalid
+7. Game continues until a player's timer reaches zero
 
 ## Features
 
@@ -43,6 +50,7 @@ Logobout is a real-time multiplayer word game where players take turns typing wo
 - Lobby member management
 - Host controls
 - Maximum player limits
+- Automatic game start when full
 
 ### Game Mechanics
 - Real-time word validation
@@ -52,19 +60,37 @@ Logobout is a real-time multiplayer word game where players take turns typing wo
 - Expandable word cards with definitions
 - Report system for invalid words
 - Parameter-based word requirements
-- Antonym-based letter elimination
+- Sophisticated scoring system:
+  - Word length bonus
+  - Letter rarity bonus
+  - Word difference (Levenshtein) bonus
+- Chess-style timer system:
+  - Base time: 3 minutes
+  - Increment: 5 seconds per move
+  - Real-time synchronization
+  - Persistent timer state
 
 ### UI/UX Features
 - Smooth page transitions with directional animations
 - Static gradient background
 - Dynamic letter grid with visual feedback
-- Expandable word cards with smart positioning
+- Expandable word cards with:
+  - Smart positioning (left/right based on screen space)
+  - Dictionary definitions
+  - Phonetic pronunciation
+  - Part of speech
+  - Score breakdown tooltips
 - Toast notification system
 - Responsive modals with backdrop blur
 - Custom scrollbar styling
 - Modern gradient buttons with hover effects
-- Profile pictures with fallback initials
+- Profile pictures with:
+  - Fallback initials
+  - Hover tooltips with player info
+  - Active player highlighting
 - Real-time presence indicators
+- Turn indicators with visual feedback
+- Loading states with backdrop blur
 - Seamless tab switching without page reloads
 
 ## File Structure
@@ -78,7 +104,9 @@ src/
 │   └── layout.tsx          # Root layout
 ├── components/
 │   ├── game/
-│   │   └── ActionModal.tsx # Report/Challenge modal
+│   │   ├── ActionModal.tsx # Report/Challenge modal
+│   │   ├── Timer.tsx       # Game timer component
+│   │   └── AnimatedScore.tsx # Score animation
 │   ├── layout/
 │   │   ├── AnimatedLayout.tsx  # Page animation wrapper
 │   │   ├── Background.tsx      # Static gradient background
@@ -87,12 +115,19 @@ src/
 │   └── ui/
 │       ├── Button.tsx      # Custom button component
 │       ├── Input.tsx       # Form input component
+│       ├── Avatar.tsx      # Profile avatar component
+│       ├── Tooltip.tsx     # Tooltip component
 │       └── Card.tsx        # Base card component
 ├── lib/
 │   ├── context/
 │   │   ├── auth.tsx        # Auth and profile context provider
 │   │   ├── toast.tsx       # Toast notification context
 │   │   └── navigation.tsx  # Navigation state context
+│   ├── hooks/
+│   │   └── useAnimatedCounter.ts # Score animation hook
+│   ├── utils/
+│   │   ├── word-scoring.ts # Word scoring logic
+│   │   └── cn.ts          # Class name utility
 │   ├── supabase/
 │   │   └── client.ts       # Supabase client configuration
 │   └── config.ts           # Application configuration
@@ -105,6 +140,7 @@ src/
   - email (text)
   - display_name (text)
   - avatar_url (text, nullable)
+  - elo (integer, default: 1000)
   - created_at (timestamp)
 
 - lobbies
@@ -120,6 +156,31 @@ src/
 - lobby_members
   - lobby_id (uuid, foreign key to lobbies)
   - user_id (uuid, foreign key to profiles)
+  - created_at (timestamp)
+
+- game_state
+  - lobby_id (uuid, primary key, foreign key to lobbies)
+  - current_turn (integer)
+  - player1_score (integer)
+  - player2_score (integer)
+  - player1_time (integer)
+  - player2_time (integer)
+  - status (enum: active, paused, finished)
+  - last_move_at (timestamp)
+  - updated_at (timestamp)
+  - updated_by (uuid, foreign key to profiles)
+
+- game_words
+  - id (uuid, primary key)
+  - lobby_id (uuid, foreign key to lobbies)
+  - word (text)
+  - player_id (uuid, foreign key to profiles)
+  - is_valid (boolean)
+  - score (integer)
+  - score_breakdown (jsonb)
+  - part_of_speech (text)
+  - definition (text)
+  - phonetics (text)
   - created_at (timestamp)
 
 - words
