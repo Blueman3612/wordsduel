@@ -22,11 +22,13 @@ interface AuthContextType {
 // Get the initial session synchronously
 const getInitialSession = () => {
   try {
-    const persistedSession = localStorage.getItem('sb-session')
-    if (persistedSession) {
-      const session = JSON.parse(persistedSession)
-      if (session?.user) {
-        return session.user
+    if (typeof window !== 'undefined') {
+      const persistedSession = localStorage.getItem('sb-session')
+      if (persistedSession) {
+        const session = JSON.parse(persistedSession)
+        if (session?.user) {
+          return session.user
+        }
       }
     }
   } catch (error) {
@@ -44,11 +46,15 @@ const AuthContext = createContext<AuthContextType>({
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(getInitialSession())
+  const [user, setUser] = useState<User | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
-  const [loading, setLoading] = useState(!user)
+  const [loading, setLoading] = useState(true)
   const mounted = useRef(false)
   const userRef = useRef<User | null>(null)
+
+  useEffect(() => {
+    setUser(getInitialSession())
+  }, [])
 
   useEffect(() => {
     userRef.current = user
@@ -80,12 +86,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const setPersistence = async (shouldPersist: boolean) => {
     try {
-      if (shouldPersist) {
-        localStorage.setItem('auth_persistence', 'persist')
-        sessionStorage.removeItem('temp_session')
-      } else {
-        localStorage.removeItem('auth_persistence')
-        sessionStorage.setItem('temp_session', 'true')
+      if (typeof window !== 'undefined') {
+        if (shouldPersist) {
+          localStorage.setItem('auth_persistence', 'persist')
+          sessionStorage.removeItem('temp_session')
+        } else {
+          localStorage.removeItem('auth_persistence')
+          sessionStorage.setItem('temp_session', 'true')
+        }
       }
     } catch (error) {
       console.error('Error setting persistence:', error)
@@ -140,9 +148,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await supabase.auth.signOut()
       setUser(null)
       setProfile(null)
-      localStorage.removeItem('auth_persistence')
-      sessionStorage.removeItem('temp_session')
-      sessionStorage.removeItem('app_loaded')
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('auth_persistence')
+        sessionStorage.removeItem('temp_session')
+        sessionStorage.removeItem('app_loaded')
+      }
     } catch (error) {
       console.error('Error signing out:', error)
     }
