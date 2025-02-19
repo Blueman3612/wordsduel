@@ -400,7 +400,7 @@ export default function GamePage({ params }: GamePageProps) {
             if (completeWord.is_valid) {
               const { error: processError } = await supabase.rpc('process_game_move', {
                 p_lobby_id: lobbyId,
-                p_player_id: user.id,
+                p_player_id: completeWord.player_id,
                 p_word: completeWord.word,
                 p_score: completeWord.score || 0,
                 p_is_valid: true
