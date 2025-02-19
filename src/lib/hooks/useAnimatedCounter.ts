@@ -31,7 +31,7 @@ export function useAnimatedCounter(targetValue: number, duration: number = 1000,
     }, 1000 / fps)
 
     return () => clearInterval(timer)
-  }, [targetValue, duration, fps])
+  }, [targetValue, duration, fps, currentValue])
 
   return currentValue
 } 

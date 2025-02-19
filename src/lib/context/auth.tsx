@@ -22,7 +22,6 @@ interface AuthContextType {
 // Get the initial session synchronously
 const getInitialSession = () => {
   try {
-    // Check if we have a stored session
     const persistedSession = localStorage.getItem('sb-session')
     if (persistedSession) {
       const session = JSON.parse(persistedSession)
@@ -45,14 +44,12 @@ const AuthContext = createContext<AuthContextType>({
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // Initialize with stored session
   const [user, setUser] = useState<User | null>(getInitialSession())
   const [profile, setProfile] = useState<Profile | null>(null)
-  const [loading, setLoading] = useState(!user) // Only load if we don't have a user
+  const [loading, setLoading] = useState(!user)
   const mounted = useRef(false)
-
-  // Keep a ref to the current user to avoid stale closures
   const userRef = useRef<User | null>(null)
+
   useEffect(() => {
     userRef.current = user
   }, [user])
@@ -73,7 +70,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Update profile when user changes
   useEffect(() => {
     if (user?.id) {
       fetchProfile(user.id)
@@ -96,25 +92,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // Verify and sync session on mount
   useEffect(() => {
     mounted.current = true
     
     async function verifySession() {
       try {
         const { data: { session } } = await supabase.auth.getSession()
-        console.log('Verifying session:', {
-          hasStoredUser: !!user,
-          hasSession: !!session,
-          sessionUser: session?.user?.email
-        })
-        
         if (session?.user) {
           if (!userRef.current || userRef.current.id !== session.user.id) {
             setUser(session.user)
           }
         } else if (userRef.current) {
-          // Clear user if we have no session
           setUser(null)
         }
       } catch (error) {
@@ -130,10 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [user])
 
-  // Handle auth state changes
   const handleAuthChange = useCallback(async (event: AuthChangeEvent, session: Session | null) => {
-    console.log('Auth state changed:', event, session?.user?.email)
-    
     if (mounted.current) {
       if (session?.user) {
         setUser(session.user)

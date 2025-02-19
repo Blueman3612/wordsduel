@@ -26,10 +26,14 @@ Logobout is a real-time multiplayer word game where players take turns typing wo
 - Email/Password authentication
 - Username/Email login support
 - Remember me functionality
+- Persistent session management with automatic recovery
+- Tab visibility handling with session refresh
 - Profile management with:
   - Display names
   - Customizable avatars (stored in Supabase Storage)
   - ELO rating system
+- Centralized profile state management
+- Synchronous session initialization
 
 ### Lobby System
 - Create public or password-protected lobbies
@@ -61,6 +65,7 @@ Logobout is a real-time multiplayer word game where players take turns typing wo
 - Modern gradient buttons with hover effects
 - Profile pictures with fallback initials
 - Real-time presence indicators
+- Seamless tab switching without page reloads
 
 ## File Structure
 ```
@@ -78,14 +83,14 @@ src/
 │   │   ├── AnimatedLayout.tsx  # Page animation wrapper
 │   │   ├── Background.tsx      # Static gradient background
 │   │   ├── PageTransition.tsx  # Page transition animations
-│   │   └── VisibilityHandler.tsx # Tab visibility manager
+│   │   └── VisibilityHandler.tsx # Session refresh on tab focus
 │   └── ui/
 │       ├── Button.tsx      # Custom button component
 │       ├── Input.tsx       # Form input component
 │       └── Card.tsx        # Base card component
 ├── lib/
 │   ├── context/
-│   │   ├── auth.tsx        # Authentication context
+│   │   ├── auth.tsx        # Auth and profile context provider
 │   │   ├── toast.tsx       # Toast notification context
 │   │   └── navigation.tsx  # Navigation state context
 │   ├── supabase/
