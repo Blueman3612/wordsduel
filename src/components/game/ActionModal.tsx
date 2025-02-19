@@ -2,6 +2,7 @@ import { useState, ChangeEvent, ReactNode } from 'react'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { cn } from '@/lib/utils/cn'
 
 interface ActionModalProps {
   isOpen: boolean
@@ -37,6 +38,7 @@ export function ActionModal({
   const [details, setDetails] = useState('')
 
   const getTitle = () => {
+    if (title === '') return undefined
     if (title) return title
     switch (mode) {
       case 'report':
@@ -70,7 +72,10 @@ export function ActionModal({
       onClose={onClose}
       title={getTitle()}
     >
-      <div className="space-y-6">
+      <div className={cn(
+        "space-y-6",
+        !getTitle() && "pt-2"
+      )}>
         {children || (
           <>
             {mode === 'report' && (

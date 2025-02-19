@@ -353,43 +353,11 @@ export default function GamePage({ params }: GamePageProps) {
           // Handle game end
           if (newState.status === 'finished' && !hasProcessedGameEnd.current && !showGameOverModal) {
             hasProcessedGameEnd.current = true;
-            // Use playersRef to ensure we have the latest player data
             const currentPlayers = playersRef.current;
-            console.log('Game End - Current Players:', {
-              player1: {
-                id: currentPlayers[0]?.id,
-                name: currentPlayers[0]?.name,
-                elo: currentPlayers[0]?.elo,
-              },
-              player2: {
-                id: currentPlayers[1]?.id,
-                name: currentPlayers[1]?.name,
-                elo: currentPlayers[1]?.elo,
-              }
-            });
 
             if (currentPlayers.length >= 2) {
               const winner = newState.player1_time <= 0 ? currentPlayers[1] : currentPlayers[0];
               const loser = newState.player1_time <= 0 ? currentPlayers[0] : currentPlayers[1];
-              
-              console.log('Game End - Winner/Loser Determined:', {
-                winner: {
-                  id: winner.id,
-                  name: winner.name,
-                  elo: winner.elo,
-                  score: newState.player1_time <= 0 ? newState.player2_score : newState.player1_score
-                },
-                loser: {
-                  id: loser.id,
-                  name: loser.name,
-                  elo: loser.elo,
-                  score: newState.player1_time <= 0 ? newState.player1_score : newState.player2_score
-                },
-                timeState: {
-                  player1Time: newState.player1_time,
-                  player2Time: newState.player2_time
-                }
-              });
               
               // Store original ELO values
               const originalWinnerElo = winner.elo;
@@ -406,7 +374,7 @@ export default function GamePage({ params }: GamePageProps) {
               });
 
               if (eloError) {
-                console.error('Game End - Error updating ELO ratings:', eloError);
+                console.error('Error updating player ratings:', eloError);
                 showToast('Error updating player ratings', 'error');
                 return;
               }
@@ -418,35 +386,18 @@ export default function GamePage({ params }: GamePageProps) {
                 .in('id', [winner.id, loser.id]);
 
               if (profilesError) {
-                console.error('Game End - Error fetching updated profiles:', profilesError);
+                console.error('Error fetching updated profiles:', profilesError);
                 return;
               }
-
-              console.log('Game End - Updated Profiles:', updatedProfiles);
 
               if (updatedProfiles) {
                 const updatedWinner = updatedProfiles.find(p => p.id === winner.id);
                 const updatedLoser = updatedProfiles.find(p => p.id === loser.id);
 
                 if (!updatedWinner || !updatedLoser) {
-                  console.error('Game End - Could not find updated profiles for both players');
+                  console.error('Could not find updated profiles for both players');
                   return;
                 }
-
-                console.log('Game End - Final ELO Updates:', {
-                  winner: {
-                    name: winner.name,
-                    oldElo: originalWinnerElo,
-                    newElo: updatedWinner.elo,
-                    change: (updatedWinner.elo || 0) - originalWinnerElo
-                  },
-                  loser: {
-                    name: loser.name,
-                    oldElo: originalLoserElo,
-                    newElo: updatedLoser.elo,
-                    change: (updatedLoser.elo || 0) - originalLoserElo
-                  }
-                });
 
                 // Update the game over info with new ratings and original ratings for change calculation
                 setGameOverInfo({
@@ -813,8 +764,6 @@ export default function GamePage({ params }: GamePageProps) {
     setInvalidLetters([])
 
     try {
-      console.log('Submitting word:', trimmedWord)
-      
       // First check if word has already been played in this lobby
       const { data: existingWords, error: existingWordError } = await supabase
         .from('game_words')
@@ -848,8 +797,6 @@ export default function GamePage({ params }: GamePageProps) {
       // Word is valid if we have any matching entries
       const isValid = dictData && dictData.length > 0
       const firstEntry = dictData?.[0]
-
-      console.log('Dictionary check result:', { isValid, dictData })
 
       // Calculate word score if valid
       let wordScore = undefined
@@ -896,8 +843,6 @@ export default function GamePage({ params }: GamePageProps) {
         }
       }
 
-      console.log('Inserting word with score:', { wordScore, scoreBreakdown })
-
       // Insert word into game_words
       const { data: insertedWord, error: insertError } = await supabase
         .from('game_words')
@@ -943,102 +888,86 @@ export default function GamePage({ params }: GamePageProps) {
           }}
           word=""
           mode="info"
-          title="Game Over!"
+          title=""
           customButtons={
             <Button
               onClick={() => router.push('/')}
               className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 w-full"
             >
-              Return to Home
+              Return Home
             </Button>
           }
         >
-          <div className="space-y-6">
-            {gameOverInfo && (
-              <>
-                {/* Winner/Loser Display */}
-                <div className="flex items-center justify-center gap-8">
-                  <div className="flex flex-col items-center gap-2">
-                    <Avatar
-                      src={gameOverInfo.winner?.avatar_url}
-                      name={gameOverInfo.winner?.name || '?'}
-                      size="xl"
-                      className="ring-4 ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]"
-                    />
-                    <div className="text-center">
-                      <p className="font-medium text-white/90">{gameOverInfo.winner?.name}</p>
-                      <p className="text-sm text-white/60">Winner</p>
-                    </div>
-                  </div>
-                  <div className="text-2xl font-light text-white/40">VS</div>
-                  <div className="flex flex-col items-center gap-2">
-                    <Avatar
-                      src={gameOverInfo.loser?.avatar_url}
-                      name={gameOverInfo.loser?.name || '?'}
-                      size="xl"
-                      className="ring-4 ring-white/20"
-                    />
-                    <div className="text-center">
-                      <p className="font-medium text-white/90">{gameOverInfo.loser?.name}</p>
-                      <p className="text-sm text-white/60">Ran out of time</p>
-                    </div>
+          {gameOverInfo && (
+            <div className="space-y-8">
+              {/* Victory/Defeat Banner */}
+              {user?.id === gameOverInfo.winner?.id ? (
+                <div className="text-center">
+                  <h3 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                    Victory!
+                  </h3>
+                </div>
+              ) : user?.id === gameOverInfo.loser?.id ? (
+                <div className="text-center">
+                  <h3 className="text-4xl font-bold text-white/80">
+                    Defeat
+                  </h3>
+                </div>
+              ) : null}
+
+              {/* Players */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Winner */}
+                <div className="flex flex-col items-center gap-3 p-4 bg-white/10 rounded-xl border border-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.15)]">
+                  <Avatar
+                    src={gameOverInfo.winner?.avatar_url}
+                    name={gameOverInfo.winner?.name || '?'}
+                    size="lg"
+                    className="ring-2 ring-purple-500/50"
+                  />
+                  <div className="text-center space-y-1">
+                    <p className="font-medium text-white/90">{gameOverInfo.winner?.name}</p>
+                    <p className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                      {gameOverInfo.winner?.score || 0}
+                    </p>
+                    <p className="text-sm space-x-1">
+                      <span className="text-white/60">{gameOverInfo.winner?.elo}</span>
+                      <span className="text-green-400">
+                        (+{(gameOverInfo.winner?.elo || 0) - (gameOverInfo.winner?.originalElo || 0)})
+                      </span>
+                    </p>
                   </div>
                 </div>
 
-                {/* Personalized Message */}
-                <div className="text-center text-lg">
-                  {user?.id === gameOverInfo.winner?.id ? (
-                    <p className="text-white/90">
-                      Congratulations! You won by managing your time better than your opponent!
+                {/* Loser */}
+                <div className="flex flex-col items-center gap-3 p-4 bg-white/5 rounded-xl border border-white/10">
+                  <Avatar
+                    src={gameOverInfo.loser?.avatar_url}
+                    name={gameOverInfo.loser?.name || '?'}
+                    size="lg"
+                    className="ring-2 ring-white/20"
+                  />
+                  <div className="text-center space-y-1">
+                    <p className="font-medium text-white/90">{gameOverInfo.loser?.name}</p>
+                    <p className="text-2xl font-bold text-white/60">
+                      {gameOverInfo.loser?.score || 0}
                     </p>
-                  ) : user?.id === gameOverInfo.loser?.id ? (
-                    <p className="text-white/90">
-                      Time's up! Better luck managing your clock next time.
+                    <p className="text-sm space-x-1">
+                      <span className="text-white/60">{gameOverInfo.loser?.elo}</span>
+                      <span className="text-red-400">
+                        ({(gameOverInfo.loser?.elo || 0) - (gameOverInfo.loser?.originalElo || 0)})
+                      </span>
                     </p>
-                  ) : (
-                    <p className="text-white/90">
-                      {gameOverInfo.winner?.name} won by managing their time better!
-                    </p>
-                  )}
-                </div>
-
-                {/* Final Scores */}
-                <div className="bg-white/5 rounded-xl p-4 backdrop-blur-sm">
-                  <div className="text-center mb-2 text-sm text-white/60">Final Scores</div>
-                  <div className="flex justify-center gap-8">
-                    <div className="text-center">
-                      <p className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                        {gameOverInfo.winner?.score || 0}
-                      </p>
-                      <div className="space-y-1">
-                        <p className="text-sm text-white/60">{gameOverInfo.winner?.name}</p>
-                        <p className="text-xs text-white/40">
-                          ELO: {gameOverInfo.winner?.elo || 1000}
-                          <span className="text-green-400 ml-1">
-                            (+{(gameOverInfo.winner?.elo || 0) - (gameOverInfo.winner?.originalElo || 0)})
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-2xl font-bold text-white/60">
-                        {gameOverInfo.loser?.score || 0}
-                      </p>
-                      <div className="space-y-1">
-                        <p className="text-sm text-white/60">{gameOverInfo.loser?.name}</p>
-                        <p className="text-xs text-white/40">
-                          ELO: {gameOverInfo.loser?.elo || 1000}
-                          <span className="text-red-400 ml-1">
-                            ({(gameOverInfo.loser?.elo || 0) - (gameOverInfo.loser?.originalElo || 0)})
-                          </span>
-                        </p>
-                      </div>
-                    </div>
                   </div>
                 </div>
-              </>
-            )}
-          </div>
+              </div>
+
+              {/* Game End Reason */}
+              <div className="text-center text-sm text-white/60">
+                Game ended due to {gameOverInfo.reason === 'time' ? 'time expiration' : 'forfeit'}
+              </div>
+            </div>
+          )}
         </ActionModal>
 
         {/* Report Modal */}
