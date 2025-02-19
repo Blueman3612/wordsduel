@@ -352,16 +352,25 @@ export default function GamePage({ params }: GamePageProps) {
 
           // Handle game end
           if (newState.status === 'finished') {
-            // Determine winner and loser based on remaining time
-            const winner = newState.player1_time <= 0 ? players[1] : players[0]
-            const loser = newState.player1_time <= 0 ? players[0] : players[1]
-            
-            setGameOverInfo({
-              winner,
-              loser,
-              reason: 'time'
-            })
-            setShowGameOverModal(true)
+            // Use playersRef to ensure we have the latest player data
+            const currentPlayers = playersRef.current;
+            if (currentPlayers.length >= 2) {
+              const winner = newState.player1_time <= 0 ? currentPlayers[1] : currentPlayers[0];
+              const loser = newState.player1_time <= 0 ? currentPlayers[0] : currentPlayers[1];
+              
+              // Ensure we have complete player data before showing the modal
+              if (winner?.name && loser?.name) {
+                setGameOverInfo({
+                  winner: { ...winner },
+                  loser: { ...loser },
+                  reason: 'time'
+                });
+                setShowGameOverModal(true);
+              } else {
+                // If player data is incomplete, try to fetch it again
+                fetchGameState();
+              }
+            }
           }
 
           // Reset animation frame timer
@@ -496,17 +505,32 @@ export default function GamePage({ params }: GamePageProps) {
           
           // Update server every second
           if (now - timerState.last_tick >= 1000) {
-            const { error } = await supabase
-              .from('game_state')
-              .update({
-                player1_time: Math.round(newTime)
-              })
-              .eq('lobby_id', lobbyId);
+            // If timer reaches zero, set game status to finished
+            if (newTime <= 0) {
+              const { error } = await supabase
+                .from('game_state')
+                .update({
+                  player1_time: 0,
+                  status: 'finished'
+                })
+                .eq('lobby_id', lobbyId);
 
-            if (error) {
-              console.error('Error updating timer:', error);
+              if (error) {
+                console.error('Error updating game state:', error);
+              }
             } else {
-              setTimerState(prev => ({ ...prev, last_tick: now }));
+              const { error } = await supabase
+                .from('game_state')
+                .update({
+                  player1_time: Math.round(newTime)
+                })
+                .eq('lobby_id', lobbyId);
+
+              if (error) {
+                console.error('Error updating timer:', error);
+              } else {
+                setTimerState(prev => ({ ...prev, last_tick: now }));
+              }
             }
           }
         } else {
@@ -515,17 +539,32 @@ export default function GamePage({ params }: GamePageProps) {
           
           // Update server every second
           if (now - timerState.last_tick >= 1000) {
-            const { error } = await supabase
-              .from('game_state')
-              .update({
-                player2_time: Math.round(newTime)
-              })
-              .eq('lobby_id', lobbyId);
+            // If timer reaches zero, set game status to finished
+            if (newTime <= 0) {
+              const { error } = await supabase
+                .from('game_state')
+                .update({
+                  player2_time: 0,
+                  status: 'finished'
+                })
+                .eq('lobby_id', lobbyId);
 
-            if (error) {
-              console.error('Error updating timer:', error);
+              if (error) {
+                console.error('Error updating game state:', error);
+              }
             } else {
-              setTimerState(prev => ({ ...prev, last_tick: now }));
+              const { error } = await supabase
+                .from('game_state')
+                .update({
+                  player2_time: Math.round(newTime)
+                })
+                .eq('lobby_id', lobbyId);
+
+              if (error) {
+                console.error('Error updating timer:', error);
+              } else {
+                setTimerState(prev => ({ ...prev, last_tick: now }));
+              }
             }
           }
         }
@@ -792,8 +831,9 @@ export default function GamePage({ params }: GamePageProps) {
         <ActionModal
           isOpen={showGameOverModal}
           onClose={() => {
-            setShowGameOverModal(false)
-            router.push('/')
+            setShowGameOverModal(false);
+            setGameOverInfo(null);
+            router.push('/');
           }}
           word=""
           mode="info"

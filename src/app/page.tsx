@@ -289,7 +289,11 @@ export default function HomePage() {
           name: `${profile?.display_name || user.email?.split('@')[0]}'s Lobby`,
           host_id: user.id,
           max_players: 2,
-          password: null
+          password: null,
+          game_config: {
+            base_time: 3 * 60 * 1000, // 3 minutes in milliseconds
+            increment: 5 * 1000 // 5 seconds in milliseconds
+          }
         })
         .select()
         .single()
