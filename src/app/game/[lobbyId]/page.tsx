@@ -15,6 +15,8 @@ import { RealtimeChannel } from '@supabase/supabase-js'
 import { calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
 import { AnimatedScore } from '@/components/game/AnimatedScore'
 import { Timer } from '@/components/game/Timer'
+import { Button } from '@/components/ui/Button'
+import { useRouter } from 'next/navigation'
 
 interface WordCard {
   word: string
@@ -72,7 +74,6 @@ type LetterRarity = typeof SCORING_CONFIG.letterRarityWeights
 type Letter = keyof LetterRarity
 
 // Add these constants at the top of the file, after imports
-const INITIAL_TIME = 3 * 60 * 1000 // 3 minutes in milliseconds
 const STORAGE_KEY_PREFIX = 'wordsduel_timer_' // Prefix for localStorage keys
 
 export default function GamePage({ params }: GamePageProps) {
@@ -89,17 +90,28 @@ export default function GamePage({ params }: GamePageProps) {
   const [isLoadingPlayers, setIsLoadingPlayers] = useState(true)
   const [currentTurn, setCurrentTurn] = useState<number>(0)
   const [gameStarted, setGameStarted] = useState(false)
-  const [player1Time, setPlayer1Time] = useState(INITIAL_TIME)
-  const [player2Time, setPlayer2Time] = useState(INITIAL_TIME)
+  const [player1Time, setPlayer1Time] = useState(0)
+  const [player2Time, setPlayer2Time] = useState(0)
   const [isLoadingGame, setIsLoadingGame] = useState(true)
+  const [showGameOverModal, setShowGameOverModal] = useState(false)
+  const [gameOverInfo, setGameOverInfo] = useState<{
+    winner: Player | null
+    loser: Player | null
+    reason: 'time' | 'forfeit'
+  } | null>(null)
+  const [gameConfig, setGameConfig] = useState<{
+    base_time: number
+    increment: number
+  }>({ base_time: 3 * 60 * 1000, increment: 5 * 1000 })
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
   const channelRef = useRef<RealtimeChannel | null>(null)
   const playersRef = useRef<Player[]>([])
   const currentTurnRef = useRef<number>(0)
-  const player1TimeRef = useRef<number>(INITIAL_TIME)
-  const player2TimeRef = useRef<number>(INITIAL_TIME)
+  const player1TimeRef = useRef<number>(0)
+  const player2TimeRef = useRef<number>(0)
+  const router = useRouter()
 
   // Add timerState to component state
   const [timerState, setTimerState] = useState<{
@@ -160,15 +172,32 @@ export default function GamePage({ params }: GamePageProps) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
   const bannedLetters: string[] = []
 
-  // Move initializeGameState to useCallback
+  // Fetch lobby configuration and initialize game state
   const initializeGameState = useCallback(async () => {
     if (!user) return;
 
     try {
-      // Use the new initialize_game_state function
+      // First get the lobby configuration
+      const { data: lobby, error: lobbyError } = await supabase
+        .from('lobbies')
+        .select('game_config')
+        .eq('id', lobbyId)
+        .single()
+
+      if (lobbyError) throw lobbyError
+
+      if (lobby?.game_config) {
+        setGameConfig(lobby.game_config)
+        // Initialize timers with the base time from config
+        setPlayer1Time(lobby.game_config.base_time)
+        setPlayer2Time(lobby.game_config.base_time)
+      }
+
+      // Initialize game state
       const { error } = await supabase.rpc('initialize_game_state', {
         p_lobby_id: lobbyId,
-        p_user_id: user.id
+        p_user_id: user.id,
+        p_base_time: lobby?.game_config?.base_time || 3 * 60 * 1000
       });
 
       if (error) {
@@ -323,8 +352,16 @@ export default function GamePage({ params }: GamePageProps) {
 
           // Handle game end
           if (newState.status === 'finished') {
-            showToast('Game Over!', 'info')
-            // Additional game over logic here
+            // Determine winner and loser based on remaining time
+            const winner = newState.player1_time <= 0 ? players[1] : players[0]
+            const loser = newState.player1_time <= 0 ? players[0] : players[1]
+            
+            setGameOverInfo({
+              winner,
+              loser,
+              reason: 'time'
+            })
+            setShowGameOverModal(true)
           }
 
           // Reset animation frame timer
@@ -394,18 +431,7 @@ export default function GamePage({ params }: GamePageProps) {
 
             // Process move if it's valid
             if (completeWord.is_valid) {
-              const { error: processError } = await supabase.rpc('process_game_move', {
-                p_lobby_id: lobbyId,
-                p_player_id: completeWord.player_id,
-                p_word: completeWord.word,
-                p_score: completeWord.score || 0,
-                p_is_valid: true
-              })
-
-              if (processError) {
-                console.error('Error processing move:', processError)
-                showToast('Error processing move', 'error')
-              }
+              await processMove(completeWord)
             }
           } catch (error) {
             console.error('Error processing word update:', error)
@@ -596,6 +622,26 @@ export default function GamePage({ params }: GamePageProps) {
     }
   }, [isLoadingPlayers, players.length, fetchGameState])
 
+  // Update the process_game_move call to include increment
+  const processMove = async (completeWord: any) => {
+    if (!completeWord.is_valid) return;
+
+    const { error: processError } = await supabase.rpc('process_game_move', {
+      p_lobby_id: lobbyId,
+      p_player_id: completeWord.player_id,
+      p_word: completeWord.word,
+      p_score: completeWord.score || 0,
+      p_is_valid: true,
+      p_increment: gameConfig.increment
+    })
+
+    if (processError) {
+      console.error('Error processing move:', processError)
+      showToast('Error processing move', 'error')
+    }
+  }
+
+  // Update the word submission handler to use processMove
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const trimmedWord = word.trim().toLowerCase()
@@ -708,7 +754,7 @@ export default function GamePage({ params }: GamePageProps) {
       console.log('Inserting word with score:', { wordScore, scoreBreakdown })
 
       // Insert word into game_words
-      const { error: insertError } = await supabase
+      const { data: insertedWord, error: insertError } = await supabase
         .from('game_words')
         .insert({
           lobby_id: lobbyId,
@@ -721,10 +767,17 @@ export default function GamePage({ params }: GamePageProps) {
           definition: firstEntry?.definitions?.[0],
           phonetics: firstEntry?.phonetics
         })
+        .select()
+        .single()
 
       if (insertError) {
         console.error('Error inserting word:', insertError)
         showToast('Error submitting word', 'error')
+        return
+      }
+
+      if (insertedWord) {
+        await processMove(insertedWord)
       }
     } catch (error) {
       console.error('Error submitting word:', error)
@@ -735,6 +788,97 @@ export default function GamePage({ params }: GamePageProps) {
   return (
     <PageTransition>
       <main className="min-h-screen">
+        {/* Game Over Modal */}
+        <ActionModal
+          isOpen={showGameOverModal}
+          onClose={() => {
+            setShowGameOverModal(false)
+            router.push('/')
+          }}
+          word=""
+          mode="info"
+          title="Game Over!"
+          customButtons={
+            <Button
+              onClick={() => router.push('/')}
+              className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 w-full"
+            >
+              Return to Home
+            </Button>
+          }
+        >
+          <div className="space-y-6">
+            {gameOverInfo && (
+              <>
+                {/* Winner/Loser Display */}
+                <div className="flex items-center justify-center gap-8">
+                  <div className="flex flex-col items-center gap-2">
+                    <Avatar
+                      src={gameOverInfo.winner?.avatar_url}
+                      name={gameOverInfo.winner?.name || '?'}
+                      size="xl"
+                      className="ring-4 ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]"
+                    />
+                    <div className="text-center">
+                      <p className="font-medium text-white/90">{gameOverInfo.winner?.name}</p>
+                      <p className="text-sm text-white/60">Winner</p>
+                    </div>
+                  </div>
+                  <div className="text-2xl font-light text-white/40">VS</div>
+                  <div className="flex flex-col items-center gap-2">
+                    <Avatar
+                      src={gameOverInfo.loser?.avatar_url}
+                      name={gameOverInfo.loser?.name || '?'}
+                      size="xl"
+                      className="ring-4 ring-white/20"
+                    />
+                    <div className="text-center">
+                      <p className="font-medium text-white/90">{gameOverInfo.loser?.name}</p>
+                      <p className="text-sm text-white/60">Ran out of time</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Personalized Message */}
+                <div className="text-center text-lg">
+                  {user?.id === gameOverInfo.winner?.id ? (
+                    <p className="text-white/90">
+                      Congratulations! You won by managing your time better than your opponent!
+                    </p>
+                  ) : user?.id === gameOverInfo.loser?.id ? (
+                    <p className="text-white/90">
+                      Time's up! Better luck managing your clock next time.
+                    </p>
+                  ) : (
+                    <p className="text-white/90">
+                      {gameOverInfo.winner?.name} won by managing their time better!
+                    </p>
+                  )}
+                </div>
+
+                {/* Final Scores */}
+                <div className="bg-white/5 rounded-xl p-4 backdrop-blur-sm">
+                  <div className="text-center mb-2 text-sm text-white/60">Final Scores</div>
+                  <div className="flex justify-center gap-8">
+                    <div className="text-center">
+                      <p className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                        {gameOverInfo.winner?.score || 0}
+                      </p>
+                      <p className="text-sm text-white/60">{gameOverInfo.winner?.name}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-white/60">
+                        {gameOverInfo.loser?.score || 0}
+                      </p>
+                      <p className="text-sm text-white/60">{gameOverInfo.loser?.name}</p>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </ActionModal>
+
         {/* Report Modal */}
         <ActionModal
           isOpen={!!reportedWord}

@@ -25,7 +25,12 @@ export default function HomePage() {
   const [password, setPassword] = useState('')
   const [username, setUsername] = useState('')
   const [rememberMe, setRememberMe] = useState(false)
-  const [profile, setProfile] = useState<{ id: string; display_name: string; avatar_url?: string } | null>(null)
+  const [profile, setProfile] = useState<{ 
+    id: string; 
+    display_name: string; 
+    avatar_url?: string;
+    elo: number;
+  } | null>(null)
   const [showProfileModal, setShowProfileModal] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [isQuickPlaying, setIsQuickPlaying] = useState(false)
@@ -36,7 +41,7 @@ export default function HomePage() {
       if (user) {
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, display_name, avatar_url')
+          .select('id, display_name, avatar_url, elo')
           .eq('id', user.id)
           .single()
         
@@ -365,7 +370,7 @@ export default function HomePage() {
               </h3>
               <div className="text-white/50">
                 <span className="text-sm">ELO Rating: </span>
-                <span className="font-medium">1200</span>
+                <span className="font-medium">{profile?.elo || 1200}</span>
               </div>
             </div>
           </div>
@@ -519,7 +524,7 @@ export default function HomePage() {
                       {profile?.display_name || user?.email?.split('@')[0]}
                     </span>
                     <span className="text-white/50 text-sm leading-tight">
-                      1200
+                      {profile?.elo || 1200}
                     </span>
                   </div>
                 </Button>

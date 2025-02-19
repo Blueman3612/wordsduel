@@ -36,6 +36,10 @@ const config: Config = {
           '50%': { transform: 'scale(1.05)', opacity: '0.8' },
           '100%': { transform: 'scale(1)', opacity: '0.5' }
         },
+        'pulse-subtle': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.8' }
+        },
         scoreUpdate: {
           '0%': { 
             transform: 'scale(1)',
@@ -53,6 +57,7 @@ const config: Config = {
         'fade-in': 'fade-in 0.2s ease-out',
         flash: 'flash 1s ease-in-out',
         'pulse-ring': 'pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        'pulse-subtle': 'pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         scoreUpdate: 'scoreUpdate 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)'
       },
     },

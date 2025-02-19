@@ -12,6 +12,7 @@ interface ActionModalProps {
   children?: ReactNode
   onSubmit?: (details: string) => void
   hideButtons?: boolean
+  customButtons?: ReactNode
 }
 
 const REPORT_REASONS = [
@@ -29,7 +30,8 @@ export function ActionModal({
   title,
   children,
   onSubmit,
-  hideButtons = false
+  hideButtons = false,
+  customButtons
 }: ActionModalProps) {
   const [selectedReason, setSelectedReason] = useState<string>('Violates requirement')
   const [details, setDetails] = useState('')
@@ -121,19 +123,23 @@ export function ActionModal({
         {/* Actions */}
         {!hideButtons && (
           <div className="flex justify-end gap-3">
-            <Button
-              onClick={onClose}
-              className="px-6 py-3 bg-white/10 from-transparent to-transparent hover:bg-white/20 text-white"
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSubmit}
-              disabled={mode === 'report' && !selectedReason}
-              className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white"
-            >
-              {mode === 'report' ? 'Submit Report' : mode === 'challenge' ? 'Submit Challenge' : 'Submit'}
-            </Button>
+            {customButtons || (
+              <>
+                <Button
+                  onClick={onClose}
+                  className="px-6 py-3 bg-white/10 from-transparent to-transparent hover:bg-white/20 text-white"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSubmit}
+                  disabled={mode === 'report' && !selectedReason}
+                  className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white"
+                >
+                  {mode === 'report' ? 'Submit Report' : mode === 'challenge' ? 'Submit Challenge' : 'Submit'}
+                </Button>
+              </>
+            )}
           </div>
         )}
       </div>

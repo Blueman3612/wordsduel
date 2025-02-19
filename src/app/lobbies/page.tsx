@@ -9,7 +9,7 @@ import { supabase } from '@/lib/supabase/client'
 import { useAuth } from '@/lib/context/auth'
 import { useToast } from '@/lib/context/toast'
 import { PageTransition } from '@/components/layout/PageTransition'
-import { Plus, Users, Clock, Lock, LogOut } from 'lucide-react'
+import { Plus, Users, Clock, Lock, LogOut, ArrowLeft, Play, Timer } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
 import { format } from 'timeago.js'
 
@@ -20,7 +20,10 @@ interface Lobby {
   created_at: string
   status: 'waiting' | 'in_progress' | 'completed'
   max_players: number
-  game_config: Record<string, unknown>
+  game_config: {
+    base_time: number // in milliseconds
+    increment: number // in milliseconds
+  }
   password: string | null
   host: {
     display_name: string
@@ -30,6 +33,17 @@ interface Lobby {
   }
   is_member?: boolean
   password_required?: boolean
+}
+
+const formatTime = (seconds: number) => {
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainingSeconds = seconds % 60
+  
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`
+  }
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
 }
 
 export default function LobbiesPage() {
@@ -44,6 +58,9 @@ export default function LobbiesPage() {
   const [joiningLobby, setJoiningLobby] = useState<Lobby | null>(null)
   const [joinPassword, setJoinPassword] = useState('')
   const [isJoining, setIsJoining] = useState(false)
+  const [baseTime, setBaseTime] = useState(180) // in seconds (3 minutes default)
+  const [increment, setIncrement] = useState(5) // in seconds
+  const [baseTimeInput, setBaseTimeInput] = useState(formatTime(180))
 
   const fetchLobbies = useCallback(async () => {
     if (!user) return // Don't fetch if there's no user
@@ -213,7 +230,11 @@ export default function LobbiesPage() {
           name: lobbyName,
           host_id: user.id,
           max_players: 2,
-          password: lobbyPassword.trim() || null
+          password: lobbyPassword.trim() || null,
+          game_config: {
+            base_time: baseTime * 1000, // convert seconds to milliseconds
+            increment: increment * 1000 // convert seconds to milliseconds
+          }
         })
         .select()
 
@@ -249,6 +270,9 @@ export default function LobbiesPage() {
   const resetCreateForm = () => {
     setNewLobbyName('')
     setLobbyPassword('')
+    setBaseTime(180) // Reset to 3 minutes in seconds
+    setIncrement(5)
+    setBaseTimeInput(formatTime(180)) // Reset the input display to "3:00"
   }
 
   const joinLobby = async (lobby: Lobby) => {
@@ -388,6 +412,15 @@ export default function LobbiesPage() {
   return (
     <PageTransition>
       <main className="min-h-screen pt-20 pb-8 px-4">
+        {/* Back Button */}
+        <button 
+          onClick={() => router.push('/')}
+          className="fixed top-4 left-4 p-3 z-50 bg-white/5 hover:bg-white/10 backdrop-blur-md rounded-xl border border-white/10 transition-all duration-200 text-white/60 hover:text-white/90 hover:scale-105 active:scale-95"
+          aria-label="Go back to home"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+
         <div className="container mx-auto max-w-4xl">
           <div className="grid gap-4">
             {/* Only show create lobby card if user doesn't have an active lobby */}
@@ -412,31 +445,39 @@ export default function LobbiesPage() {
               >
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-lg font-medium text-white/90">
+                    {/* Top Row */}
+                    <div className="flex items-center gap-4">
+                      <h3 className="text-lg font-medium text-white/90 flex items-center gap-2">
                         {lobby.name}
+                        {lobby.password && (
+                          <div className="bg-white/10 p-1 rounded-md">
+                            <Lock className="w-4 h-4 text-pink-400" />
+                          </div>
+                        )}
                       </h3>
-                      {lobby.password && (
-                        <div className="bg-white/10 p-1 rounded-md">
-                          <Lock className="w-4 h-4 text-pink-400" />
-                        </div>
-                      )}
+                      <div className="flex items-center gap-2 text-white/60 bg-white/5 px-3 py-1 rounded-lg">
+                        <Timer className="w-4 h-4" />
+                        <span>{formatTime(lobby.game_config.base_time / 1000)}</span>
+                        <span className="text-white/40">|</span>
+                        <span>+{lobby.game_config.increment / 1000}s</span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4 mt-1 text-sm text-white/50">
+                    {/* Bottom Row */}
+                    <div className="flex items-center gap-4 mt-2 text-sm text-white/50">
                       <div className="flex items-center gap-1">
                         <Users className="w-4 h-4" />
                         <span>{lobby._count.members}/{lobby.max_players}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Clock className="w-4 h-4" />
-                        <span>
-                          {format(lobby.created_at)}
-                        </span>
                       </div>
                       <div className="flex items-center gap-1 text-white/40">
                         <span>Created by</span>
                         <span className="text-white/60 font-medium">
                           {lobby.host.display_name}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Clock className="w-4 h-4" />
+                        <span>
+                          {format(lobby.created_at)}
                         </span>
                       </div>
                     </div>
@@ -457,13 +498,24 @@ export default function LobbiesPage() {
                       </Button>
                     </div>
                   ) : lobby.is_member ? (
-                    <Button
-                      onClick={() => leaveLobby(lobby.id)}
-                      className="bg-white/10 hover:bg-white/20 flex items-center gap-2"
-                    >
-                      <LogOut className="w-4 h-4" />
-                      Leave
-                    </Button>
+                    <div className="flex items-center gap-4">
+                      {lobby._count.members >= lobby.max_players && (
+                        <Button
+                          onClick={() => router.push(`/game/${lobby.id}`)}
+                          className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 flex items-center gap-2 animate-pulse-subtle"
+                        >
+                          <Play className="w-4 h-4" />
+                          Join
+                        </Button>
+                      )}
+                      <Button
+                        onClick={() => leaveLobby(lobby.id)}
+                        className="bg-white/10 hover:bg-white/20 flex items-center gap-2"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        Leave
+                      </Button>
+                    </div>
                   ) : (
                     <Button
                       onClick={() => joinLobby(lobby)}
@@ -509,7 +561,7 @@ export default function LobbiesPage() {
               />
               <p className="text-xs text-white/40 italic">Leave empty to use your username</p>
             </div>
-            
+
             <div className="space-y-2">
               <Input
                 type="password"
@@ -519,6 +571,147 @@ export default function LobbiesPage() {
                 className="w-full"
               />
               <p className="text-xs text-white/40 italic">Leave empty for a public lobby</p>
+            </div>
+            
+            {/* Time Controls - Moved below lobby name and password */}
+            <div className="space-y-4">
+              <h3 className="text-sm font-medium text-white/70">Time Controls</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="block text-sm text-white/60">
+                    Base Time
+                  </label>
+                  <div className="relative">
+                    <Input
+                      type="text"
+                      value={baseTimeInput}
+                      onFocus={(e: React.FocusEvent<HTMLInputElement>) => {
+                        // Store the current formatted time when focusing
+                        setBaseTimeInput(formatTime(baseTime))
+                      }}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        let input = e.target.value.replace(/[^\d:]/g, '')
+                        
+                        // Remove any existing colons for consistent handling
+                        input = input.replace(/:/g, '')
+                        
+                        // Limit to 4 digits maximum
+                        if (input.length > 4) {
+                          input = input.slice(0, 4)
+                        }
+                        
+                        // Handle backspace and general input
+                        if (input.length > 0) {
+                          // If 1-2 digits, treat as minutes
+                          if (input.length <= 2) {
+                            const minutes = parseInt(input) || 0
+                            const totalSeconds = minutes * 60
+                            // Clamp the value between 30 seconds and 1 hour
+                            const clampedSeconds = Math.min(3600, Math.max(30, totalSeconds))
+                            setBaseTime(clampedSeconds)
+                            setBaseTimeInput(input)
+                            return
+                          }
+                          
+                          // For 3-4 digits, format as MM:SS
+                          const minutes = parseInt(input.slice(0, -2)) || 0
+                          const seconds = parseInt(input.slice(-2)) || 0
+                          const totalSeconds = minutes * 60 + seconds
+                          
+                          // Clamp the value between 30 seconds and 1 hour
+                          const clampedSeconds = Math.min(3600, Math.max(30, totalSeconds))
+                          setBaseTime(clampedSeconds)
+                          
+                          // Format with colon
+                          input = input.slice(0, -2) + ':' + input.slice(-2)
+                        }
+                        
+                        // Always update the input field to show what user is typing
+                        setBaseTimeInput(input)
+                      }}
+                      onBlur={() => {
+                        // On blur, if input is 1-2 digits, format as minutes:seconds
+                        if (!baseTimeInput.includes(':') && baseTimeInput.length <= 2) {
+                          const minutes = parseInt(baseTimeInput) || 0
+                          const totalSeconds = minutes * 60
+                          // Clamp the value between 30 seconds and 1 hour
+                          const clampedSeconds = Math.min(3600, Math.max(30, totalSeconds))
+                          setBaseTime(clampedSeconds)
+                          setBaseTimeInput(formatTime(clampedSeconds))
+                        } else {
+                          // Otherwise reformat to valid time
+                          setBaseTimeInput(formatTime(baseTime))
+                        }
+                      }}
+                      className="w-full pr-8 text-center"
+                    />
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newTime = Math.min(3600, baseTime + 30)
+                          setBaseTime(newTime)
+                          setBaseTimeInput(formatTime(newTime))
+                        }}
+                        className="p-1 hover:bg-white/10 rounded-sm transition-colors text-white/60 hover:text-white/90"
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M18 15l-6-6-6 6"/>
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newTime = Math.max(30, baseTime - 30)
+                          setBaseTime(newTime)
+                          setBaseTimeInput(formatTime(newTime))
+                        }}
+                        className="p-1 hover:bg-white/10 rounded-sm transition-colors text-white/60 hover:text-white/90"
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M6 9l6 6 6-6"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm text-white/60">
+                    Increment (seconds)
+                  </label>
+                  <div className="relative">
+                    <Input
+                      type="number"
+                      min="0"
+                      max="30"
+                      value={increment}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => 
+                        setIncrement(Math.min(30, Math.max(0, parseInt(e.target.value) || 5)))}
+                      className="w-full pr-8 appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    />
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setIncrement(prev => Math.min(30, prev + 1))}
+                        className="p-1 hover:bg-white/10 rounded-sm transition-colors text-white/60 hover:text-white/90"
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M18 15l-6-6-6 6"/>
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIncrement(prev => Math.max(0, prev - 1))}
+                        className="p-1 hover:bg-white/10 rounded-sm transition-colors text-white/60 hover:text-white/90"
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M6 9l6 6 6-6"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <Button
