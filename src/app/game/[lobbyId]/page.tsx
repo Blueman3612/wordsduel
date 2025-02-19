@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { use } from 'react'
 import { Send, X, Flag } from 'lucide-react'
 import { supabase } from '@/lib/supabase/client'
@@ -40,25 +40,6 @@ interface Player {
   elo: number
   score: number
   avatar_url?: string | null
-}
-
-interface GameWord {
-  id: string
-  created_at: string
-  lobby_id: string
-  player_id: string
-  word: string
-  is_valid: boolean
-  score?: number
-  score_breakdown?: {
-    lengthScore: number
-    uniqueLetterBonus: number
-    levenBonus: number
-    rarityBonus: number
-  }
-  part_of_speech?: string
-  definition?: string
-  phonetics?: string
 }
 
 interface GameState {
@@ -105,12 +86,12 @@ export default function GamePage({ params }: GamePageProps) {
   const [isFlashing, setIsFlashing] = useState(false)
   const [reportedWord, setReportedWord] = useState('')
   const [players, setPlayers] = useState<Player[]>([])
+  const [isInitialLoad, setIsInitialLoad] = useState(true)
   const [isLoadingPlayers, setIsLoadingPlayers] = useState(true)
   const [currentTurn, setCurrentTurn] = useState<number>(0)
   const [gameStarted, setGameStarted] = useState(false)
   const [player1Time, setPlayer1Time] = useState(INITIAL_TIME)
   const [player2Time, setPlayer2Time] = useState(INITIAL_TIME)
-  const [lastTickTime, setLastTickTime] = useState<number | null>(null)
   const [isLoadingGame, setIsLoadingGame] = useState(true)
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -180,6 +161,27 @@ export default function GamePage({ params }: GamePageProps) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
   const bannedLetters: string[] = []
 
+  // Move initializeGameState to useCallback
+  const initializeGameState = useCallback(async () => {
+    if (!user) return;
+
+    try {
+      // Use the new initialize_game_state function
+      const { error } = await supabase.rpc('initialize_game_state', {
+        p_lobby_id: lobbyId,
+        p_user_id: user.id
+      });
+
+      if (error) {
+        console.error('Error initializing game state:', error);
+        showToast('Error initializing game', 'error');
+      }
+    } catch (error) {
+      console.error('Error initializing game state:', error);
+      showToast('Error initializing game', 'error');
+    }
+  }, [user, lobbyId, showToast]);
+
   // Fetch lobby members and their profiles
   useEffect(() => {
     if (!user) return
@@ -228,28 +230,7 @@ export default function GamePage({ params }: GamePageProps) {
     }
 
     fetchLobbyMembers()
-  }, [user, lobbyId, showToast])
-
-  // Update the initializeGameState function
-  const initializeGameState = async () => {
-    if (!user) return;
-
-    try {
-      // Use the new initialize_game_state function
-      const { error } = await supabase.rpc('initialize_game_state', {
-        p_lobby_id: lobbyId,
-        p_user_id: user.id
-      });
-
-      if (error) {
-        console.error('Error initializing game state:', error);
-        showToast('Error initializing game', 'error');
-      }
-    } catch (error) {
-      console.error('Error initializing game state:', error);
-      showToast('Error initializing game', 'error');
-    }
-  };
+  }, [user, lobbyId, showToast, initializeGameState]) // Keep initializeGameState in dependencies
 
   // Function to check for banned letters
   const checkBannedLetters = (word: string): string[] => {
@@ -332,7 +313,7 @@ export default function GamePage({ params }: GamePageProps) {
           }
 
           // Reset animation frame timer
-          setLastTickTime(null)
+          setTimerState(prev => ({ ...prev, last_tick: Date.now() }));
         }
       )
       .on(
@@ -521,11 +502,15 @@ export default function GamePage({ params }: GamePageProps) {
   }, [user, lobbyId, players, gameStarted, currentTurn, player1Time, player2Time, timerState]);
 
   // Function to fetch initial game state
-  const fetchGameState = async () => {
+  const fetchGameState = useCallback(async () => {
     if (!user || !lobbyId) return
 
     try {
-      setIsLoadingGame(true)
+      // Only set loading state on initial load
+      if (isInitialLoad) {
+        setIsLoadingGame(true)
+      }
+
       // First fetch all words for this lobby
       const { data: gameWords, error: wordsError } = await supabase
         .from('game_words')
@@ -553,17 +538,17 @@ export default function GamePage({ params }: GamePageProps) {
         )
 
         const processedWords: WordCard[] = gameWords.map(word => ({
-          word: word.word,
+            word: word.word,
           player: playerNames.get(word.player_id) || 'Unknown',
-          timestamp: Date.parse(word.created_at),
-          isInvalid: !word.is_valid,
-          score: word.score,
-          scoreBreakdown: word.score_breakdown,
-          dictionary: {
-            partOfSpeech: word.part_of_speech,
-            definition: word.definition,
-            phonetics: word.phonetics
-          }
+            timestamp: Date.parse(word.created_at),
+            isInvalid: !word.is_valid,
+            score: word.score,
+            scoreBreakdown: word.score_breakdown,
+            dictionary: {
+              partOfSpeech: word.part_of_speech,
+              definition: word.definition,
+              phonetics: word.phonetics
+            }
         }))
 
         setWords(processedWords)
@@ -579,16 +564,19 @@ export default function GamePage({ params }: GamePageProps) {
     } catch (error) {
       console.error('Error fetching game state:', error)
     } finally {
-      setIsLoadingGame(false)
+      if (isInitialLoad) {
+        setIsLoadingGame(false)
+        setIsInitialLoad(false)
+      }
     }
-  }
+  }, [user, lobbyId, players, isInitialLoad])
 
   // Fetch initial game state after players are loaded
   useEffect(() => {
     if (!isLoadingPlayers && players.length > 0) {
       fetchGameState()
     }
-  }, [isLoadingPlayers, players.length])
+  }, [isLoadingPlayers, players.length, fetchGameState])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -738,8 +726,8 @@ export default function GamePage({ params }: GamePageProps) {
         />
 
         <div className="h-screen flex">
-          {/* Loading overlay */}
-          {(isLoadingPlayers || isLoadingGame) && (
+          {/* Loading overlay - Only show on initial load */}
+          {isInitialLoad && (isLoadingPlayers || isLoadingGame) && (
             <div className="absolute inset-0 backdrop-blur-sm z-50 flex items-center justify-center bg-white/5">
               <div className="text-white text-xl font-medium bg-white/10 px-6 py-3 rounded-xl backdrop-blur-md border border-white/10">
                 {isLoadingPlayers ? 'Loading players...' : 'Loading game state...'}
@@ -1010,7 +998,7 @@ export default function GamePage({ params }: GamePageProps) {
                             isLoadingGame 
                               ? "Loading game..." 
                               : user?.id === players[currentTurn]?.id 
-                                ? "Type your word..." 
+                            ? "Type your word..." 
                                 : "Waiting for opponent..."
                           }
                           className={cn(`
