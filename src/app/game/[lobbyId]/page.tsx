@@ -42,6 +42,7 @@ interface Player {
   elo: number
   score: number
   avatar_url?: string | null
+  originalElo?: number
 }
 
 interface GameState {
@@ -111,6 +112,7 @@ export default function GamePage({ params }: GamePageProps) {
   const currentTurnRef = useRef<number>(0)
   const player1TimeRef = useRef<number>(0)
   const player2TimeRef = useRef<number>(0)
+  const hasProcessedGameEnd = useRef<boolean>(false)
   const router = useRouter()
 
   // Add timerState to component state
@@ -335,9 +337,7 @@ export default function GamePage({ params }: GamePageProps) {
         async (payload) => {
           if (!payload.new) return
 
-          // Type assertion for the payload
-          const newState = payload.new as unknown as GameState
-          console.log('Received game state update:', newState)
+          const newState = payload.new as GameState
           
           // Update all game state at once
           setCurrentTurn(newState.current_turn)
@@ -351,24 +351,130 @@ export default function GamePage({ params }: GamePageProps) {
           })
 
           // Handle game end
-          if (newState.status === 'finished') {
+          if (newState.status === 'finished' && !hasProcessedGameEnd.current && !showGameOverModal) {
+            hasProcessedGameEnd.current = true;
             // Use playersRef to ensure we have the latest player data
             const currentPlayers = playersRef.current;
+            console.log('Game End - Current Players:', {
+              player1: {
+                id: currentPlayers[0]?.id,
+                name: currentPlayers[0]?.name,
+                elo: currentPlayers[0]?.elo,
+              },
+              player2: {
+                id: currentPlayers[1]?.id,
+                name: currentPlayers[1]?.name,
+                elo: currentPlayers[1]?.elo,
+              }
+            });
+
             if (currentPlayers.length >= 2) {
               const winner = newState.player1_time <= 0 ? currentPlayers[1] : currentPlayers[0];
               const loser = newState.player1_time <= 0 ? currentPlayers[0] : currentPlayers[1];
               
-              // Ensure we have complete player data before showing the modal
-              if (winner?.name && loser?.name) {
+              console.log('Game End - Winner/Loser Determined:', {
+                winner: {
+                  id: winner.id,
+                  name: winner.name,
+                  elo: winner.elo,
+                  score: newState.player1_time <= 0 ? newState.player2_score : newState.player1_score
+                },
+                loser: {
+                  id: loser.id,
+                  name: loser.name,
+                  elo: loser.elo,
+                  score: newState.player1_time <= 0 ? newState.player1_score : newState.player2_score
+                },
+                timeState: {
+                  player1Time: newState.player1_time,
+                  player2Time: newState.player2_time
+                }
+              });
+              
+              // Store original ELO values
+              const originalWinnerElo = winner.elo;
+              const originalLoserElo = loser.elo;
+
+              // Call calculate_and_update_elo RPC function
+              const { error: eloError } = await supabase.rpc('calculate_and_update_elo', {
+                p_end_reason: 'time',
+                p_lobby_id: lobbyId,
+                p_loser_id: loser.id,
+                p_loser_score: newState.player1_time <= 0 ? newState.player1_score : newState.player2_score,
+                p_winner_id: winner.id,
+                p_winner_score: newState.player1_time <= 0 ? newState.player2_score : newState.player1_score
+              });
+
+              if (eloError) {
+                console.error('Game End - Error updating ELO ratings:', eloError);
+                showToast('Error updating player ratings', 'error');
+                return;
+              }
+
+              // Always fetch the updated profiles to show the latest ELO ratings
+              const { data: updatedProfiles, error: profilesError } = await supabase
+                .from('profiles')
+                .select('id, display_name, avatar_url, elo, games_played')
+                .in('id', [winner.id, loser.id]);
+
+              if (profilesError) {
+                console.error('Game End - Error fetching updated profiles:', profilesError);
+                return;
+              }
+
+              console.log('Game End - Updated Profiles:', updatedProfiles);
+
+              if (updatedProfiles) {
+                const updatedWinner = updatedProfiles.find(p => p.id === winner.id);
+                const updatedLoser = updatedProfiles.find(p => p.id === loser.id);
+
+                if (!updatedWinner || !updatedLoser) {
+                  console.error('Game End - Could not find updated profiles for both players');
+                  return;
+                }
+
+                console.log('Game End - Final ELO Updates:', {
+                  winner: {
+                    name: winner.name,
+                    oldElo: originalWinnerElo,
+                    newElo: updatedWinner.elo,
+                    change: (updatedWinner.elo || 0) - originalWinnerElo
+                  },
+                  loser: {
+                    name: loser.name,
+                    oldElo: originalLoserElo,
+                    newElo: updatedLoser.elo,
+                    change: (updatedLoser.elo || 0) - originalLoserElo
+                  }
+                });
+
+                // Update the game over info with new ratings and original ratings for change calculation
                 setGameOverInfo({
-                  winner: { ...winner },
-                  loser: { ...loser },
+                  winner: { 
+                    ...winner,
+                    elo: updatedWinner.elo,
+                    originalElo: originalWinnerElo
+                  },
+                  loser: { 
+                    ...loser,
+                    elo: updatedLoser.elo,
+                    originalElo: originalLoserElo
+                  },
                   reason: 'time'
                 });
+
+                // Update players state to reflect new ratings
+                setPlayers(prev => {
+                  const updated = [...prev];
+                  const winnerIndex = updated.findIndex(p => p.id === winner.id);
+                  const loserIndex = updated.findIndex(p => p.id === loser.id);
+                  if (winnerIndex !== -1) updated[winnerIndex].elo = updatedWinner.elo;
+                  if (loserIndex !== -1) updated[loserIndex].elo = updatedLoser.elo;
+                  return updated;
+                });
+
+                // Show the game over modal
                 setShowGameOverModal(true);
-              } else {
-                // If player data is incomplete, try to fetch it again
-                fetchGameState();
               }
             }
           }
@@ -618,17 +724,17 @@ export default function GamePage({ params }: GamePageProps) {
         )
 
         const processedWords: WordCard[] = gameWords.map(word => ({
-          word: word.word,
+            word: word.word,
           player: playerNames.get(word.player_id) || 'Unknown',
-          timestamp: Date.parse(word.created_at),
-          isInvalid: !word.is_valid,
-          score: word.score,
-          scoreBreakdown: word.score_breakdown,
-          dictionary: {
-            partOfSpeech: word.part_of_speech,
-            definition: word.definition,
-            phonetics: word.phonetics
-          }
+            timestamp: Date.parse(word.created_at),
+            isInvalid: !word.is_valid,
+            score: word.score,
+            scoreBreakdown: word.score_breakdown,
+            dictionary: {
+              partOfSpeech: word.part_of_speech,
+              definition: word.definition,
+              phonetics: word.phonetics
+            }
         }))
 
         setWords(processedWords)
@@ -904,13 +1010,29 @@ export default function GamePage({ params }: GamePageProps) {
                       <p className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
                         {gameOverInfo.winner?.score || 0}
                       </p>
-                      <p className="text-sm text-white/60">{gameOverInfo.winner?.name}</p>
+                      <div className="space-y-1">
+                        <p className="text-sm text-white/60">{gameOverInfo.winner?.name}</p>
+                        <p className="text-xs text-white/40">
+                          ELO: {gameOverInfo.winner?.elo || 1000}
+                          <span className="text-green-400 ml-1">
+                            (+{(gameOverInfo.winner?.elo || 0) - (gameOverInfo.winner?.originalElo || 0)})
+                          </span>
+                        </p>
+                      </div>
                     </div>
                     <div className="text-center">
                       <p className="text-2xl font-bold text-white/60">
                         {gameOverInfo.loser?.score || 0}
                       </p>
-                      <p className="text-sm text-white/60">{gameOverInfo.loser?.name}</p>
+                      <div className="space-y-1">
+                        <p className="text-sm text-white/60">{gameOverInfo.loser?.name}</p>
+                        <p className="text-xs text-white/40">
+                          ELO: {gameOverInfo.loser?.elo || 1000}
+                          <span className="text-red-400 ml-1">
+                            ({(gameOverInfo.loser?.elo || 0) - (gameOverInfo.loser?.originalElo || 0)})
+                          </span>
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
