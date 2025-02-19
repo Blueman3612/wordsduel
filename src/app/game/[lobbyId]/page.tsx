@@ -57,7 +57,6 @@ interface GameState {
   status: 'active' | 'paused' | 'finished'
   last_move_at: string
   game_started_at: string
-  last_timer_update: string
 }
 
 interface GamePageProps {
@@ -512,131 +511,55 @@ export default function GamePage({ params }: GamePageProps) {
     }
   }, [lobbyId, user, showToast]) // Added showToast to dependency array
 
-  // Load saved timer values after mount
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-
-    const savedPlayer1Time = localStorage.getItem(`${STORAGE_KEY_PREFIX}${lobbyId}_p1`)
-    const savedPlayer2Time = localStorage.getItem(`${STORAGE_KEY_PREFIX}${lobbyId}_p2`)
-
-    if (savedPlayer1Time) {
-      setPlayer1Time(Number(savedPlayer1Time))
-    }
-    if (savedPlayer2Time) {
-      setPlayer2Time(Number(savedPlayer2Time))
-    }
-  }, [lobbyId])
-
-  // Persist timer values to localStorage
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    localStorage.setItem(`${STORAGE_KEY_PREFIX}${lobbyId}_p1`, player1Time.toString())
-  }, [player1Time, lobbyId])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    localStorage.setItem(`${STORAGE_KEY_PREFIX}${lobbyId}_p2`, player2Time.toString())
-  }, [player2Time, lobbyId])
-
   // Check if game has started (any valid words played)
   useEffect(() => {
     const hasValidWords = words.some(w => !w.isInvalid)
     setGameStarted(hasValidWords)
   }, [words])
 
-  // Replace the existing timer effect with this simplified version
+  // Replace the existing timer effect with this server-driven version
   useEffect(() => {
     if (!user || !lobbyId || players.length < 2 || !gameStarted) return;
 
-    let lastUpdateTime = Date.now();
-    
-    const updateTimer = async () => {
-      const now = Date.now();
-      const deltaTime = now - lastUpdateTime;
-      
-      if (!timerState.is_paused && user?.id === players[currentTurn]?.id) {
-        // Update the timer of the current player
-        if (currentTurn === 0) {
-          const newTime = Math.max(0, player1Time - deltaTime);
-          setPlayer1Time(newTime);
-          
-          // Update server every second
-          if (now - timerState.last_tick >= 1000) {
-            // If timer reaches zero, set game status to finished
-            if (newTime <= 0) {
-              const { error } = await supabase
-                .from('game_state')
-                .update({
-                  player1_time: 0,
-                  status: 'finished'
-                })
-                .eq('lobby_id', lobbyId);
+    // Set up interval to fetch the latest game state
+    const interval = setInterval(async () => {
+      if (user?.id === players[currentTurn]?.id) {
+        const now = Date.now();
+        const { data: gameState, error } = await supabase
+          .from('game_state')
+          .select('player1_time, player2_time, last_move_at')
+          .eq('lobby_id', lobbyId)
+          .single();
 
-              if (error) {
-                console.error('Error updating game state:', error);
-              }
-            } else {
-              const { error } = await supabase
-                .from('game_state')
-                .update({
-                  player1_time: Math.round(newTime)
-                })
-                .eq('lobby_id', lobbyId);
+        if (error) {
+          console.error('Error fetching game state:', error);
+          return;
+        }
 
-              if (error) {
-                console.error('Error updating timer:', error);
-              } else {
-                setTimerState(prev => ({ ...prev, last_tick: now }));
-              }
-            }
-          }
-        } else {
-          const newTime = Math.max(0, player2Time - deltaTime);
-          setPlayer2Time(newTime);
-          
-          // Update server every second
-          if (now - timerState.last_tick >= 1000) {
-            // If timer reaches zero, set game status to finished
-            if (newTime <= 0) {
-              const { error } = await supabase
-                .from('game_state')
-                .update({
-                  player2_time: 0,
-                  status: 'finished'
-                })
-                .eq('lobby_id', lobbyId);
+        if (gameState) {
+          const timeSinceLastUpdate = now - Date.parse(gameState.last_move_at);
+          const currentPlayerTime = currentTurn === 0 ? gameState.player1_time : gameState.player2_time;
+          const newTime = Math.max(0, currentPlayerTime - timeSinceLastUpdate);
 
-              if (error) {
-                console.error('Error updating game state:', error);
-              }
-            } else {
-              const { error } = await supabase
-                .from('game_state')
-                .update({
-                  player2_time: Math.round(newTime)
-                })
-                .eq('lobby_id', lobbyId);
+          // Update the server with the new time
+          const { error: updateError } = await supabase
+            .from('game_state')
+            .update({
+              [currentTurn === 0 ? 'player1_time' : 'player2_time']: Math.round(newTime),
+              last_move_at: new Date().toISOString(),
+              status: newTime <= 0 ? 'finished' : 'active'
+            })
+            .eq('lobby_id', lobbyId);
 
-              if (error) {
-                console.error('Error updating timer:', error);
-              } else {
-                setTimerState(prev => ({ ...prev, last_tick: now }));
-              }
-            }
+          if (updateError) {
+            console.error('Error updating game state:', updateError);
           }
         }
       }
-      
-      lastUpdateTime = now;
-    };
+    }, 1000);
 
-    // Set up interval for timer updates
-    const interval = setInterval(updateTimer, 1000);
-
-    return () => {
-      clearInterval(interval);
-    };
-  }, [user, lobbyId, players, gameStarted, currentTurn, player1Time, player2Time, timerState]);
+    return () => clearInterval(interval);
+  }, [user, lobbyId, players, gameStarted, currentTurn]);
 
   // Function to fetch initial game state
   const fetchGameState = useCallback(async () => {
