@@ -61,6 +61,17 @@ interface GameWord {
   phonetics?: string
 }
 
+interface GameState {
+  lobby_id: string
+  current_turn: number
+  player1_score: number
+  player2_score: number
+  player1_time: number
+  player2_time: number
+  updated_at: string
+  updated_by?: string
+}
+
 interface GamePageProps {
   params: Promise<{
     lobbyId: string
@@ -96,6 +107,7 @@ export default function GamePage({ params }: GamePageProps) {
   const [player1Time, setPlayer1Time] = useState(INITIAL_TIME)
   const [player2Time, setPlayer2Time] = useState(INITIAL_TIME)
   const [lastTickTime, setLastTickTime] = useState<number | null>(null)
+  const [isLoadingGame, setIsLoadingGame] = useState(true)
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
@@ -235,9 +247,8 @@ export default function GamePage({ params }: GamePageProps) {
   useEffect(() => {
     if (!lobbyId || !user) return
 
-    console.log('Setting up subscription')
+    console.log('Setting up realtime subscription')
 
-    // Subscribe to word changes
     channelRef.current = supabase
       .channel(`game:${lobbyId}`)
       .on(
@@ -250,66 +261,70 @@ export default function GamePage({ params }: GamePageProps) {
         },
         async (payload) => {
           console.log('Received realtime update:', payload)
-          const newWord = payload.new as GameWord
-          
+
+          if (!payload.new) return
+
           try {
-            // Fetch the complete word data since the payload might be missing some fields
-            const { data: wordData, error } = await supabase
+            // Get the complete word data
+            const { data: completeWord, error: wordError } = await supabase
               .from('game_words')
               .select('*')
-              .eq('id', newWord.id)
+              .eq('id', payload.new.id)
+              .single()
 
-            if (error) {
-              console.error('Error fetching complete word data:', error)
+            if (wordError) throw wordError
+
+            if (!completeWord) {
+              console.log('No complete word data found')
               return
             }
 
-            if (!wordData || wordData.length === 0) {
-              console.error('No word data found')
-              return
+            // Get the player's display name
+            const { data: playerProfile, error: profileError } = await supabase
+              .from('profiles')
+              .select('display_name')
+              .eq('id', completeWord.player_id)
+              .single()
+
+            if (profileError) {
+              console.error('Error fetching player profile:', profileError)
             }
 
-            const completeWord = wordData[0] as GameWord
-            console.log('Complete word data:', completeWord)
+            // Find player who played the word
+            const currentPlayers = playersRef.current
+            
+            console.log('Subscription: Processing word:', {
+              word: completeWord.word,
+              playerId: completeWord.player_id,
+              currentUserId: user?.id,
+              isFromOpponent: completeWord.player_id !== user?.id,
+              currentPlayers: currentPlayers
+            })
 
-            if (completeWord && completeWord.is_valid) {
-              // Find player who played the word
-              const currentPlayers = playersRef.current
-              const player = currentPlayers.find(p => p.id === completeWord.player_id)
-              
-              console.log('Subscription: Processing valid word:', {
-                word: completeWord.word,
-                playerId: completeWord.player_id,
-                currentUserId: user?.id,
-                isFromOpponent: completeWord.player_id !== user?.id,
-                currentPlayers: currentPlayers
-              })
-
-              // Handle score update
-              if (typeof completeWord.score === 'number' && !isNaN(completeWord.score)) {
-                setPlayers(prev => {
-                  const updatedPlayers = [...prev]
-                  const playerIndex = updatedPlayers.findIndex(p => p.id === completeWord.player_id)
-                  if (playerIndex !== -1) {
-                    const currentScore = updatedPlayers[playerIndex].score || 0
-                    updatedPlayers[playerIndex] = {
-                      ...updatedPlayers[playerIndex],
-                      score: currentScore + (completeWord.score || 0)
-                    }
-                  }
-                  return updatedPlayers
-                })
+            // Check if word already exists to prevent duplicates
+            setWords(prev => {
+              // Only add if the word isn't already in the list
+              if (prev.some(w => w.word === completeWord.word)) {
+                console.log('Subscription: Word already in list, skipping')
+                return prev
               }
 
-              // Add the word to the list
-              setWords(prev => {
-                // Only add if the word isn't already in the list
-                if (prev.some(w => w.word === completeWord.word)) {
-                  console.log('Subscription: Word already in list, skipping')
-                  return prev
+              const newWord: WordCard = {
+                word: completeWord.word,
+                player: playerProfile?.display_name || 'Unknown',
+                timestamp: Date.parse(completeWord.created_at),
+                isInvalid: !completeWord.is_valid,
+                score: completeWord.score,
+                scoreBreakdown: completeWord.score_breakdown,
+                dictionary: {
+                  partOfSpeech: completeWord.part_of_speech,
+                  definition: completeWord.definition,
+                  phonetics: completeWord.phonetics
                 }
+              }
 
-                // Handle increment for the player who played the word
+              // Handle increment for the player who played the word
+              if (completeWord.is_valid) {
                 const validWordsCount = prev.filter(w => !w.isInvalid).length
                 console.log('Subscription: Valid words count:', validWordsCount)
                 
@@ -323,41 +338,37 @@ export default function GamePage({ params }: GamePageProps) {
                   })
                   
                   if (isPlayer1) {
-                    setPlayer1Time(time => {
-                      console.log('Subscription: Incrementing P1 time:', time, '+', INCREMENT)
-                      return time + (INCREMENT / 2)
-                    })
+                    setPlayer1Time(time => time + (INCREMENT / 2))
                   } else {
-                    setPlayer2Time(time => {
-                      console.log('Subscription: Incrementing P2 time:', time, '+', INCREMENT)
-                      return time + (INCREMENT / 2)
-                    })
+                    setPlayer2Time(time => time + (INCREMENT / 2))
                   }
-                } else {
-                  console.log('Subscription: First move, skipping increment')
                 }
 
-                return [...prev, {
-                  word: completeWord.word,
-                  player: player?.name || 'Unknown',
-                  timestamp: Date.parse(completeWord.created_at),
-                  isInvalid: !completeWord.is_valid,
-                  score: completeWord.score,
-                  scoreBreakdown: completeWord.score_breakdown,
-                  dictionary: {
-                    partOfSpeech: completeWord.part_of_speech,
-                    definition: completeWord.definition,
-                    phonetics: completeWord.phonetics
-                  }
-                }]
-              })
+                // Only update scores if we're not the player who just played
+                // This prevents double updates since the player who played already updated their score
+                if (completeWord.player_id !== user?.id) {
+                  setPlayers(prevPlayers => {
+                    const updatedPlayers = [...prevPlayers]
+                    const playerIndex = updatedPlayers.findIndex(p => p.id === completeWord.player_id)
+                    if (playerIndex !== -1 && completeWord.score) {
+                      updatedPlayers[playerIndex] = {
+                        ...updatedPlayers[playerIndex],
+                        score: (updatedPlayers[playerIndex].score || 0) + completeWord.score
+                      }
+                    }
+                    return updatedPlayers
+                  })
+                }
 
-              // Only update turn if we're not the player who just played
-              if (completeWord.player_id !== user?.id) {
-                setCurrentTurn(prev => prev === 0 ? 1 : 0)
-                setLastTickTime(null)
+                // Only update turn if we're not the player who just played
+                if (completeWord.player_id !== user?.id) {
+                  setCurrentTurn(prev => prev === 0 ? 1 : 0)
+                  setLastTickTime(null)
+                }
               }
-            }
+
+              return [...prev, newWord]
+            })
           } catch (error) {
             console.error('Error processing realtime update:', error)
           }
@@ -369,7 +380,7 @@ export default function GamePage({ params }: GamePageProps) {
       console.log('Cleaning up subscription')
       channelRef.current?.unsubscribe()
     }
-  }, [lobbyId, user]) // Removed players dependency
+  }, [lobbyId, user])
 
   // Load saved timer values after mount
   useEffect(() => {
@@ -419,9 +430,9 @@ export default function GamePage({ params }: GamePageProps) {
       const deltaTime = timestamp - lastTickTime
       
       if (currentTurn === 0) {
-        setPlayer1Time(prev => Math.max(0, prev - deltaTime))
+        setPlayer1Time(prev => Math.round(Math.max(0, prev - deltaTime)))
       } else {
-        setPlayer2Time(prev => Math.max(0, prev - deltaTime))
+        setPlayer2Time(prev => Math.round(Math.max(0, prev - deltaTime)))
       }
 
       setLastTickTime(timestamp)
@@ -436,6 +447,188 @@ export default function GamePage({ params }: GamePageProps) {
       }
     }
   }, [currentTurn, lastTickTime, user, players, gameStarted])
+
+  // Function to fetch initial game state
+  const fetchGameState = async () => {
+    if (!user || !lobbyId) return
+
+    try {
+      setIsLoadingGame(true)
+      // First fetch all words for this lobby
+      const { data: gameWords, error: wordsError } = await supabase
+        .from('game_words')
+        .select('*')
+        .eq('lobby_id', lobbyId)
+        .order('created_at', { ascending: true })
+
+      if (wordsError) throw wordsError
+
+      if (gameWords) {
+        // Get all unique player IDs from the words
+        const playerIds = [...new Set(gameWords.map(word => word.player_id))]
+        
+        // Fetch player profiles in a separate query
+        const { data: playerProfiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, display_name')
+          .in('id', playerIds)
+
+        if (profilesError) throw profilesError
+
+        // Create a map of player IDs to display names
+        const playerNames = new Map(
+          playerProfiles?.map(profile => [profile.id, profile.display_name]) || []
+        )
+
+        const processedWords: WordCard[] = gameWords.map(word => ({
+          word: word.word,
+          player: playerNames.get(word.player_id) || 'Unknown',
+          timestamp: Date.parse(word.created_at),
+          isInvalid: !word.is_valid,
+          score: word.score,
+          scoreBreakdown: word.score_breakdown,
+          dictionary: {
+            partOfSpeech: word.part_of_speech,
+            definition: word.definition,
+            phonetics: word.phonetics
+          }
+        }))
+
+        setWords(processedWords)
+        
+        // Set current turn based on the last valid word
+        const validWords = processedWords.filter(w => !w.isInvalid)
+        if (validWords.length > 0) {
+          const lastWord = validWords[validWords.length - 1]
+          const lastPlayer = players.findIndex(p => p.name === lastWord.player)
+          setCurrentTurn(lastPlayer === 0 ? 1 : 0)
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching game state:', error)
+    } finally {
+      setIsLoadingGame(false)
+    }
+  }
+
+  // Fetch initial game state after players are loaded
+  useEffect(() => {
+    if (!isLoadingPlayers && players.length > 0) {
+      fetchGameState()
+    }
+  }, [isLoadingPlayers, players.length])
+
+  // Function to update game state in the database
+  const updateGameState = async () => {
+    if (!user || !lobbyId || !players.length) return
+
+    try {
+      const { error } = await supabase.rpc('update_game_state', {
+        p_lobby_id: lobbyId,
+        p_current_turn: currentTurn,
+        p_player1_score: players[0]?.score || 0,
+        p_player2_score: players[1]?.score || 0,
+        p_player1_time: Math.round(player1Time),
+        p_player2_time: Math.round(player2Time)
+      })
+
+      if (error) {
+        console.error('Error updating game state:', error)
+      }
+    } catch (error) {
+      console.error('Error updating game state:', error)
+    }
+  }
+
+  // Update game state when relevant values change
+  useEffect(() => {
+    if (gameStarted) {
+      updateGameState()
+    }
+  }, [currentTurn, player1Time, player2Time, players[0]?.score, players[1]?.score])
+
+  // Subscribe to game state changes
+  useEffect(() => {
+    if (!lobbyId || !user) return
+
+    const channel = supabase
+      .channel(`game_state:${lobbyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'game_state',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        async (payload) => {
+          if (!payload.new) return
+
+          // Type assertion for the payload
+          const newState = payload.new as unknown as GameState
+          // Only update state if it's from another player
+          if (newState.updated_by !== user.id) {
+            setCurrentTurn(newState.current_turn)
+            setPlayer1Time(newState.player1_time)
+            setPlayer2Time(newState.player2_time)
+            setPlayers(prev => {
+              const updated = [...prev]
+              if (updated[0]) updated[0].score = newState.player1_score
+              if (updated[1]) updated[1].score = newState.player2_score
+              return updated
+            })
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      channel.unsubscribe()
+    }
+  }, [lobbyId, user])
+
+  // Fetch initial game state
+  const fetchInitialGameState = async () => {
+    if (!user || !lobbyId) return
+
+    try {
+      const { data: gameStates, error } = await supabase
+        .from('game_state')
+        .select('*')
+        .eq('lobby_id', lobbyId)
+
+      if (error) {
+        console.error('Error fetching game state:', error)
+        return
+      }
+
+      // If no game state exists yet, create one
+      if (!gameStates || gameStates.length === 0) {
+        await updateGameState()
+        return
+      }
+
+      const gameState = gameStates[0]
+      setCurrentTurn(gameState.current_turn)
+      setPlayer1Time(gameState.player1_time)
+      setPlayer2Time(gameState.player2_time)
+      setPlayers(prev => {
+        const updated = [...prev]
+        if (updated[0]) updated[0].score = gameState.player1_score
+        if (updated[1]) updated[1].score = gameState.player2_score
+        return updated
+      })
+    } catch (error) {
+      console.error('Error fetching game state:', error)
+    }
+  }
+
+  // Fetch initial game state after players are loaded
+  useEffect(() => {
+    if (!isLoadingPlayers && players.length > 0) {
+      fetchInitialGameState()
+    }
+  }, [isLoadingPlayers, players.length])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -579,9 +772,21 @@ export default function GamePage({ params }: GamePageProps) {
       const insertedWord = insertedWords[0]
       console.log('Successfully inserted word:', insertedWord)
 
-      // Only update turn immediately for better UX
+      // Update score and turn immediately for better UX
       if (isValid) {
         console.log('Submit: Word is valid, updating turn')
+        // Update score immediately for the player who played
+        setPlayers(prevPlayers => {
+          const updatedPlayers = [...prevPlayers]
+          const playerIndex = updatedPlayers.findIndex(p => p.id === user.id)
+          if (playerIndex !== -1 && wordScore) {
+            updatedPlayers[playerIndex] = {
+              ...updatedPlayers[playerIndex],
+              score: (updatedPlayers[playerIndex].score || 0) + wordScore
+            }
+          }
+          return updatedPlayers
+        })
         setCurrentTurn(prev => prev === 0 ? 1 : 0)
         setLastTickTime(null)
       }
@@ -603,6 +808,15 @@ export default function GamePage({ params }: GamePageProps) {
         />
 
         <div className="h-screen flex">
+          {/* Loading overlay */}
+          {(isLoadingPlayers || isLoadingGame) && (
+            <div className="absolute inset-0 backdrop-blur-sm z-50 flex items-center justify-center bg-white/5">
+              <div className="text-white text-xl font-medium bg-white/10 px-6 py-3 rounded-xl backdrop-blur-md border border-white/10">
+                {isLoadingPlayers ? 'Loading players...' : 'Loading game state...'}
+              </div>
+            </div>
+          )}
+
           {/* Sidebar - Fixed */}
           <aside className="w-80 border-r border-white/20 shadow-[1px_0_0_0_rgba(255,255,255,0.1)] p-6 flex flex-col">
             <h2 className="text-2xl font-semibold text-white mb-4">
@@ -861,10 +1075,14 @@ export default function GamePage({ params }: GamePageProps) {
                             // Clear invalid letters when input changes
                             setInvalidLetters([])
                           }}
-                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id}
-                          placeholder={user?.id === players[currentTurn]?.id 
-                            ? "Type your word..." 
-                            : "Waiting for opponent..."}
+                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id || isLoadingGame}
+                          placeholder={
+                            isLoadingGame 
+                              ? "Loading game..." 
+                              : user?.id === players[currentTurn]?.id 
+                                ? "Type your word..." 
+                                : "Waiting for opponent..."
+                          }
                           className={cn(`
                             flex-1 px-6 py-4 rounded-xl border bg-white/5 text-white 
                             placeholder:text-gray-400 focus:outline-none focus:ring-2 
@@ -878,7 +1096,7 @@ export default function GamePage({ params }: GamePageProps) {
                         />
                         <button
                           type="submit"
-                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id}
+                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id || isLoadingGame}
                           className="p-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl shadow-lg transition-all duration-200 
                           hover:shadow-xl hover:scale-105 hover:from-purple-600 hover:to-pink-600 
                           active:scale-95 active:shadow-md active:translate-y-0.5
