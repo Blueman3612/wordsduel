@@ -118,6 +118,68 @@ export default function GamePage({ params }: GamePageProps) {
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
   const [bannedLetters, setBannedLetters] = useState<string[]>([])
 
+  // Fetch initial player data
+  useEffect(() => {
+    const fetchPlayers = async () => {
+      if (!lobbyId || !user) return
+
+      try {
+        console.log('Fetching players for lobby:', lobbyId)
+        
+        // First get lobby members
+        const { data: membersData, error: membersError } = await supabase
+          .from('lobby_members')
+          .select('user_id, joined_at')
+          .eq('lobby_id', lobbyId)
+          .order('joined_at', { ascending: true })
+
+        if (membersError) {
+          console.error('Error fetching lobby members:', membersError)
+          return
+        }
+
+        console.log('Lobby members:', membersData)
+
+        if (!membersData?.length) {
+          console.log('No members found in lobby')
+          return
+        }
+
+        // Get profiles for all members
+        const { data: profilesData, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, display_name, avatar_url, elo')
+          .in('id', membersData.map(m => m.user_id))
+
+        if (profilesError) {
+          console.error('Error fetching profiles:', profilesError)
+          return
+        }
+
+        console.log('Player profiles:', profilesData)
+
+        // Transform profiles into Player objects
+        const playerProfiles = profilesData?.map((profile, index) => ({
+          id: profile.id,
+          name: profile.display_name,
+          elo: profile.elo,
+          score: 0,
+          avatar_url: profile.avatar_url,
+          isOnline: true,
+          originalElo: profile.elo
+        })) || []
+
+        setPlayers(playerProfiles)
+        console.log('Set players:', playerProfiles)
+
+      } catch (error) {
+        console.error('Error in fetchPlayers:', error)
+      }
+    }
+
+    fetchPlayers()
+  }, [lobbyId, user])
+
   // Game parameters
   const parameters = [
     'at least 5 letters long',
