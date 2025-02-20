@@ -107,7 +107,12 @@ export default function LobbiesPage() {
         is_member: lobby.lobby_members?.some((member: { user_id: string }) => member.user_id === user.id) || false
       })) || []
 
-      setLobbies(processedLobbies)
+      // Filter out full lobbies unless user is a member
+      const filteredLobbies = processedLobbies.filter(lobby => 
+        lobby.is_member || lobby._count.members < lobby.max_players
+      )
+
+      setLobbies(filteredLobbies)
     } catch (error) {
       console.error('Error fetching lobbies:', error)
       setLobbies([])
