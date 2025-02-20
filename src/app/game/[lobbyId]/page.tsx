@@ -17,6 +17,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import { use } from 'react'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 
 interface WordCard {
   word: string
@@ -42,7 +43,6 @@ interface Player {
   elo: number
   score: number
   avatar_url?: string | null
-  isOnline?: boolean
   originalElo?: number
 }
 
@@ -117,6 +117,7 @@ export default function GamePage({ params }: GamePageProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
   const [bannedLetters, setBannedLetters] = useState<string[]>([])
+  const [onlinePlayers, setOnlinePlayers] = useState<Set<string>>(new Set())
 
   // Fetch initial player data
   useEffect(() => {
@@ -158,14 +159,13 @@ export default function GamePage({ params }: GamePageProps) {
 
         console.log('Player profiles:', profilesData)
 
-        // Transform profiles into Player objects
+        // Transform profiles into Player objects - note removal of isOnline
         const playerProfiles = profilesData?.map((profile, index) => ({
           id: profile.id,
           name: profile.display_name,
           elo: profile.elo,
           score: 0,
           avatar_url: profile.avatar_url,
-          isOnline: true,
           originalElo: profile.elo
         })) || []
 
@@ -226,118 +226,196 @@ export default function GamePage({ params }: GamePageProps) {
     })
   }, [words])
 
-  // Add subscription effect
+  // Subscription effect - remove players dependency
   useEffect(() => {
     if (!lobbyId || !user) return
 
-    // Set up single channel for all game-related subscriptions
-    const channel = supabase.channel(`game_room:${lobbyId}`)
-      // Game state changes
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'game_state',
-          filter: `lobby_id=eq.${lobbyId}`
-        },
-        (payload: GameStatePayload) => {
-          const newState = payload.new as GameState
-          if (!newState) return
-          
-          // Update game state
-          setCurrentTurn(newState.current_turn)
-          setPlayer1Time(newState.player1_time)
-          setPlayer2Time(newState.player2_time)
-          setBannedLetters(newState.banned_letters || [])
-          
-          // Update player scores
-          setPlayers(prev => {
-            const updated = [...prev]
-            if (updated[0]) updated[0].score = newState.player1_score
-            if (updated[1]) updated[1].score = newState.player2_score
-            return updated
-          })
+    let channel: RealtimeChannel | null = null;
 
-          // Handle game end
-          if (newState.status === 'finished' && !showGameOverModal) {
-            const winner = newState.player1_time <= 0 ? players[1] : players[0]
-            const loser = newState.player1_time <= 0 ? players[0] : players[1]
+    const handleVisibilityChange = async () => {
+      if (!channel) return;
+      
+      if (document.visibilityState === 'hidden') {
+        await channel.untrack();
+        // Let the host handle presence updates
+      } else if (document.visibilityState === 'visible') {
+        await channel.track({
+          user_id: user.id,
+          online_at: new Date().toISOString(),
+        });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // First get lobby info to determine if we're the host
+    const fetchLobbyInfo = async () => {
+      const { data: lobbyData } = await supabase
+        .from('lobbies')
+        .select('host_id')
+        .eq('id', lobbyId)
+        .single();
+      
+      const isHost = lobbyData?.host_id === user.id;
+      console.log('Is host:', isHost);
+      return isHost;
+    };
+
+    // Initialize channel and set up subscriptions
+    const initializeChannel = async () => {
+      const isHost = await fetchLobbyInfo();
+      console.log('Initializing channel for lobby:', lobbyId);
+
+      channel = supabase.channel(`game_room:${lobbyId}`, {
+        config: {
+          presence: {
+            key: user.id,
+          },
+        },
+      });
+
+      // Set up all listeners before subscribing
+      channel
+        .on('presence', { event: 'sync' }, () => {
+          if (!channel) return;
+          const state = channel.presenceState();
+          console.log('Raw presence state:', state);
+          
+          // Only the host updates the shared online players state
+          if (isHost) {
+            const onlineIds = new Set<string>();
             
-            setGameOverInfo({
-              winner,
-              loser,
-              reason: 'time'
-            })
-            setShowGameOverModal(true)
+            // Log each step of presence processing
+            Object.entries(state).forEach(([key, presences]) => {
+              console.log('Processing presence key:', key, 'presences:', presences);
+              (presences as any[]).forEach(presence => {
+                if (presence.user_id) {
+                  console.log('Adding online user:', presence.user_id);
+                  onlineIds.add(presence.user_id);
+                }
+              });
+            });
+
+            console.log('Final online IDs:', Array.from(onlineIds));
+            setOnlinePlayers(onlineIds);
           }
-        }
-      )
-      // Word plays
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'game_words',
-          filter: `lobby_id=eq.${lobbyId}`
-        },
-        (payload: GameWordPayload) => {
-          const newWord = payload.new as GameWord
-          if (!newWord) return
+        })
+        .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+          console.log('Player joined:', key, newPresences);
+        })
+        .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+          console.log('Player left:', key, leftPresences);
+        });
 
-          // Add word to the list
-          setWords(prev => {
-            if (prev.some(w => w.word === newWord.word)) return prev
+      // Add other channel listeners
+      channel
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'game_state',
+            filter: `lobby_id=eq.${lobbyId}`
+          },
+          (payload: GameStatePayload) => {
+            const newState = payload.new as GameState
+            if (!newState) return
+            
+            // Update game state
+            setCurrentTurn(newState.current_turn)
+            setPlayer1Time(newState.player1_time)
+            setPlayer2Time(newState.player2_time)
+            setBannedLetters(newState.banned_letters || [])
+            
+            // Update player scores
+            setPlayers(prev => {
+              const updated = [...prev]
+              if (updated[0]) updated[0].score = newState.player1_score
+              if (updated[1]) updated[1].score = newState.player2_score
+              return updated
+            })
 
-            const wordCard: WordCard = {
-              word: newWord.word,
-              player: players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
-              timestamp: Date.now(),
-              isInvalid: !newWord.is_valid,
-              score: newWord.score,
-              scoreBreakdown: newWord.score_breakdown,
-              dictionary: {
-                partOfSpeech: newWord.part_of_speech,
-                definition: newWord.definition,
-                phonetics: newWord.phonetics
-              }
+            // Handle game end
+            if (newState.status === 'finished' && !showGameOverModal) {
+              const winner = newState.player1_time <= 0 ? players[1] : players[0]
+              const loser = newState.player1_time <= 0 ? players[0] : players[1]
+              
+              setGameOverInfo({
+                winner,
+                loser,
+                reason: 'time'
+              })
+              setShowGameOverModal(true)
             }
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'game_words',
+            filter: `lobby_id=eq.${lobbyId}`
+          },
+          (payload: GameWordPayload) => {
+            const newWord = payload.new as GameWord
+            if (!newWord) return
 
-            return [...prev, wordCard]
-          })
+            // Add word to the list
+            setWords(prev => {
+              if (prev.some(w => w.word === newWord.word)) return prev
 
-          // Update game started state
-          setGameStarted(true)
-        }
-      )
-      // Player presence
-      .on(
-        'presence',
-        { event: 'sync' },
-        () => {
-          const state = channel.presenceState()
-          
-          // Update player online status
-          setPlayers(prev => {
-            return prev.map(player => ({
-              ...player,
-              isOnline: Object.keys(state).some(id => id === player.id)
-            }))
-          })
-        }
-      )
-      .subscribe()
+              const wordCard: WordCard = {
+                word: newWord.word,
+                player: players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+                timestamp: Date.now(),
+                isInvalid: !newWord.is_valid,
+                score: newWord.score,
+                scoreBreakdown: newWord.score_breakdown,
+                dictionary: {
+                  partOfSpeech: newWord.part_of_speech,
+                  definition: newWord.definition,
+                  phonetics: newWord.phonetics
+                }
+              }
 
-    // Track local player's presence
-    if (user) {
-      channel.track({ user_id: user.id })
-    }
+              return [...prev, wordCard]
+            })
+
+            // Update game started state
+            setGameStarted(true)
+          }
+        )
+        .subscribe(async (status) => {  // Add the subscribe call here
+          console.log('Channel subscription status:', status);
+          if (status === 'SUBSCRIBED') {
+            console.log('Channel subscribed, tracking presence for user:', user.id);
+            await channel?.track({
+              user_id: user.id,
+              online_at: new Date().toISOString(),
+            });
+          }
+        });
+    };
+
+    // Call initialize and log any errors
+    initializeChannel().catch(error => {
+      console.error('Error initializing channel:', error);
+    });
 
     return () => {
-      channel.unsubscribe()
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      
+      if (channel) {
+        console.log('Cleaning up channel...');
+        channel.untrack();
+        channel.unsubscribe();
+      }
     }
-  }, [lobbyId, user, players, showGameOverModal])
+  }, [lobbyId, user]) // Removed players dependency
+
+  // Compute online status in render instead of state
+  const getPlayerOnlineStatus = (playerId: string) => onlinePlayers.has(playerId)
 
   // Basic word submission handler (to be expanded)
   const handleSubmit = async (e: React.FormEvent) => {
@@ -790,7 +868,7 @@ export default function GamePage({ params }: GamePageProps) {
                               currentTurn === 0
                                 ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
                                 : 'ring-white/20',
-                              players[0] && !players[0].isOnline && 'opacity-50'
+                              getPlayerOnlineStatus(players[0]?.id) === false && 'opacity-50'
                             )}
                           />
                           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
@@ -799,7 +877,7 @@ export default function GamePage({ params }: GamePageProps) {
                               isActive={gameStarted && currentTurn === 0} 
                             />
                           </div>
-                          {players[0] && !players[0].isOnline && (
+                          {getPlayerOnlineStatus(players[0]?.id) === false && (
                             <div className="absolute -bottom-1 -right-1 bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/20 z-10">
                               <div className="w-3 h-3 rounded-full bg-red-500/50 animate-pulse" />
                             </div>
@@ -835,7 +913,7 @@ export default function GamePage({ params }: GamePageProps) {
                               currentTurn === 1
                                 ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
                                 : 'ring-white/20',
-                              players[1] && !players[1].isOnline && 'opacity-50'
+                              getPlayerOnlineStatus(players[1]?.id) === false && 'opacity-50'
                             )}
                           />
                           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
@@ -844,7 +922,7 @@ export default function GamePage({ params }: GamePageProps) {
                               isActive={gameStarted && currentTurn === 1} 
                             />
                           </div>
-                          {players[1] && !players[1].isOnline && (
+                          {getPlayerOnlineStatus(players[1]?.id) === false && (
                             <div className="absolute -bottom-1 -right-1 bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/20 z-10">
                               <div className="w-3 h-3 rounded-full bg-red-500/50 animate-pulse" />
                             </div>
