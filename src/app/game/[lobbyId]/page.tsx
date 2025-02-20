@@ -126,6 +126,77 @@ export default function GamePage({ params }: GamePageProps) {
   const [bannedLetters, setBannedLetters] = useState<string[]>([])
   const [onlinePlayers, setOnlinePlayers] = useState<Set<string>>(new Set())
 
+  // Fetch initial game state and words
+  useEffect(() => {
+    const fetchGameStateAndWords = async () => {
+      if (!lobbyId) return;
+
+      try {
+        // Fetch game state
+        const { data: gameState, error: stateError } = await supabase
+          .from('game_state')
+          .select('*')
+          .eq('lobby_id', lobbyId)
+          .maybeSingle();
+
+        if (stateError) {
+          console.error('Error fetching game state:', stateError);
+          return;
+        }
+
+        if (gameState) {
+          setCurrentTurn(gameState.current_turn);
+          setPlayer1Time(gameState.player1_time);
+          setPlayer2Time(gameState.player2_time);
+          setBannedLetters(gameState.banned_letters || []);
+          setGameStarted(true);
+
+          // Update player scores
+          setPlayers(prev => {
+            const updated = [...prev];
+            if (updated[0]) updated[0].score = gameState.player1_score;
+            if (updated[1]) updated[1].score = gameState.player2_score;
+            return updated;
+          });
+        }
+
+        // Fetch played words
+        const { data: gameWords, error: wordsError } = await supabase
+          .from('game_words')
+          .select('*')
+          .eq('lobby_id', lobbyId)
+          .order('created_at', { ascending: true });
+
+        if (wordsError) {
+          console.error('Error fetching game words:', wordsError);
+          return;
+        }
+
+        if (gameWords) {
+          const wordCards: WordCard[] = gameWords.map(word => ({
+            word: word.word,
+            player: players.find(p => p.id === word.player_id)?.name || 'Unknown',
+            timestamp: new Date(word.created_at).getTime(),
+            isInvalid: !word.is_valid,
+            score: word.score,
+            scoreBreakdown: word.score_breakdown,
+            dictionary: {
+              partOfSpeech: word.part_of_speech,
+              definition: word.definition,
+              phonetics: word.phonetics
+            }
+          }));
+
+          setWords(wordCards);
+        }
+      } catch (error) {
+        console.error('Error in fetchGameStateAndWords:', error);
+      }
+    };
+
+    fetchGameStateAndWords();
+  }, [lobbyId]);
+
   // Fetch initial player data
   useEffect(() => {
     const fetchPlayers = async () => {
