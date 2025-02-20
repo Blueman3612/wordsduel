@@ -6,4 +6,5 @@ When interacting with Supabase, remember to:
 
 - NEVER attempt to use CLI
 - NEVER create a .sql migration file
-- ALWYAS just give code that can be copy pasted into the SQL Editor in browser
+- ALWAYS just give code that can be copy pasted into the SQL Editor in browser
+- ALWAYS give me the SQL Editor code in its ENTIRETY, don't give me partial code to suggest an edit

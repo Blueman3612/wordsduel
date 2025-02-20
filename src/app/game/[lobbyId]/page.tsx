@@ -12,6 +12,7 @@ import { Avatar } from '@/components/ui/Avatar'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils/cn'
 import { RealtimeChannel } from '@supabase/supabase-js'
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import { calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
 import { AnimatedScore } from '@/components/game/AnimatedScore'
 import { Timer } from '@/components/game/Timer'
@@ -59,6 +60,19 @@ interface GameState {
   game_started_at: string
 }
 
+interface PlayerPresence {
+  user_id: string;
+  status: 'online' | 'offline';
+  last_seen: string;
+  lobby_id: string;
+}
+
+type PresencePayload = RealtimePostgresChangesPayload<{
+  user_id: string;
+  status: 'online' | 'offline';
+  last_seen: string;
+}>;
+
 interface GamePageProps {
   params: Promise<{
     lobbyId: string
@@ -75,6 +89,17 @@ type Letter = keyof LetterRarity
 
 // Add these constants at the top of the file, after imports
 const STORAGE_KEY_PREFIX = 'wordsduel_timer_' // Prefix for localStorage keys
+
+// Update type guard to handle the realtime payload
+function isPlayerPresence(obj: unknown): obj is PlayerPresence {
+  return obj !== null &&
+    typeof obj === 'object' &&
+    'user_id' in obj &&
+    'status' in obj &&
+    'last_seen' in obj &&
+    'lobby_id' in obj &&
+    ((obj as PlayerPresence).status === 'online' || (obj as PlayerPresence).status === 'offline');
+}
 
 export default function GamePage({ params }: GamePageProps) {
   const { lobbyId } = use(params)
@@ -119,6 +144,8 @@ export default function GamePage({ params }: GamePageProps) {
     last_tick: number;
     is_paused: boolean;
   }>({ last_tick: Date.now(), is_paused: false });
+
+  const [playerPresence, setPlayerPresence] = useState<PlayerPresence[]>([]);
 
   // Update refs when state changes
   useEffect(() => {
@@ -325,6 +352,24 @@ export default function GamePage({ params }: GamePageProps) {
 
     channelRef.current = supabase
       .channel(`game:${lobbyId}`)
+      // Add subscription to lobbies table
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'lobbies',
+          filter: `id=eq.${lobbyId}`
+        },
+        (payload: RealtimePostgresChangesPayload<{ id: string }>) => {
+          // If the lobby was deleted, redirect to lobbies page
+          if (payload.eventType === 'DELETE') {
+            showToast('Lobby no longer exists', 'info');
+            router.push('/lobbies');
+            return;
+          }
+        }
+      )
       .on(
         'postgres_changes',
         {
@@ -798,6 +843,101 @@ export default function GamePage({ params }: GamePageProps) {
     }
   }
 
+  // Add presence tracking effect
+  useEffect(() => {
+    if (!user || !lobbyId) return;
+
+    // Set up interval to update presence
+    const presenceInterval = setInterval(async () => {
+      try {
+        await supabase.from('game_presence').upsert({
+          lobby_id: lobbyId,
+          user_id: user.id,
+          last_seen: new Date().toISOString(),
+          status: 'online'
+        });
+      } catch (error) {
+        console.error('Error updating presence:', error);
+      }
+    }, 3000);
+
+    // Subscribe to presence changes
+    const presenceChannel = supabase.channel(`presence:${lobbyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'game_presence',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        async (payload: RealtimePostgresChangesPayload<PlayerPresence>) => {
+          console.log('Presence change detected:', payload);
+          
+          // Handle DELETE event or offline status
+          if (payload.eventType === 'DELETE' || (payload.eventType === 'UPDATE' && payload.new?.status === 'offline')) {
+            const userId = (payload.old as PlayerPresence)?.user_id || (payload.new as PlayerPresence)?.user_id;
+            if (!userId) {
+              console.log('No user_id in presence payload');
+              return;
+            }
+            
+            console.log('Player disconnected, calling handle_player_disconnect');
+            try {
+              // Log the parameters we're about to send
+              console.log('Disconnect params:', { lobbyId, userId });
+              
+              const { error } = await supabase.rpc('handle_player_disconnect', {
+                p_lobby_id: lobbyId,
+                p_user_id: userId
+              });
+              
+              if (error) {
+                console.error('handle_player_disconnect error:', error);
+                showToast('Error handling disconnect', 'error');
+              }
+            } catch (error) {
+              console.error('Error in handle_player_disconnect:', error);
+              showToast('Error handling disconnect', 'error');
+            }
+            return;
+          }
+          
+          // Only update presence state if not a disconnect event
+          const newPresence = payload.new;
+          if (newPresence && isPlayerPresence(newPresence)) {
+            setPlayerPresence(prev => {
+              const updated = [...prev];
+              const index = updated.findIndex(p => p.user_id === newPresence.user_id);
+              if (index !== -1) {
+                updated[index] = newPresence;
+              } else {
+                updated.push(newPresence);
+              }
+              return updated;
+            });
+          }
+        }
+      )
+      .subscribe();
+
+    // Cleanup function
+    return () => {
+      clearInterval(presenceInterval);
+      presenceChannel.unsubscribe();
+      // Set status to offline
+      void supabase.from('game_presence').update({ status: 'offline' })
+        .eq('lobby_id', lobbyId)
+        .eq('user_id', user.id);
+    };
+  }, [user, lobbyId, showToast, router]);
+
+  // Helper function to check if a player is online
+  const isPlayerOnline = (playerId: string) => {
+    const presence = playerPresence.find(p => p.user_id === playerId);
+    return presence?.status === 'online';
+  };
+
   return (
     <PageTransition>
       <main className="min-h-screen">
@@ -1016,8 +1156,8 @@ export default function GamePage({ params }: GamePageProps) {
               <div className="text-center mb-6">
               </div>
               <div className="flex flex-wrap items-start gap-y-4 justify-center w-full">
-                {words.map((wordCard, index) => (
-                  <div key={index} className="flex items-center">
+                {words.map((wordCard) => (
+                  <div key={`${wordCard.word}-${wordCard.timestamp}`} className="flex items-center">
                     <div 
                       className="relative group overflow-visible" 
                       onMouseEnter={updateExpandDirection}
@@ -1141,7 +1281,7 @@ export default function GamePage({ params }: GamePageProps) {
                       )}
                     </div>
 
-                    {index < words.length - 1 && (
+                    {wordCard !== words[words.length - 1] && (
                       <div className="flex items-center mx-4">
                         <div className="w-4 h-px bg-white/20" />
                         <div className="w-2 h-2 rotate-45 border-t-2 border-r-2 border-white/20" />
@@ -1218,10 +1358,13 @@ export default function GamePage({ params }: GamePageProps) {
                             <span className="text-white/60 text-sm">
                               {isLoadingPlayers ? '...' : (players[0]?.elo || '1000')}
                             </span>
+                            {players[0] && !isPlayerOnline(players[0].id) && (
+                              <span className="text-white/40 text-sm">Offline</span>
+                            )}
                           </div>
                         }
                       >
-                        <div className="rounded-full">
+                        <div className="rounded-full relative">
                           <Avatar
                             src={players[0]?.avatar_url}
                             name={players[0]?.name || '?'}
@@ -1230,17 +1373,23 @@ export default function GamePage({ params }: GamePageProps) {
                               'ring-4 transition-all duration-300',
                               currentTurn === 0
                                 ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
-                                : 'ring-white/20'
+                                : 'ring-white/20',
+                              players[0] && !isPlayerOnline(players[0].id) && 'opacity-50'
                             )}
                           />
+                          <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
+                            <Timer 
+                              timeLeft={player1Time} 
+                              isActive={gameStarted && currentTurn === 0} 
+                            />
+                          </div>
+                          {players[0] && !isPlayerOnline(players[0].id) && (
+                            <div className="absolute -bottom-1 -right-1 bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/20 z-10">
+                              <div className="w-3 h-3 rounded-full bg-red-500/50 animate-pulse" />
+                            </div>
+                          )}
                         </div>
                       </Tooltip>
-                      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-                        <Timer 
-                          timeLeft={player1Time} 
-                          isActive={gameStarted && currentTurn === 0} 
-                        />
-                      </div>
                     </div>
                     
                     <span className="text-white/40 text-2xl font-light">VS</span>
@@ -1257,10 +1406,13 @@ export default function GamePage({ params }: GamePageProps) {
                             <span className="text-white/60 text-sm">
                               {isLoadingPlayers ? '...' : (players[1]?.elo || '1000')}
                             </span>
+                            {players[1] && !isPlayerOnline(players[1].id) && (
+                              <span className="text-white/40 text-sm">Offline</span>
+                            )}
                           </div>
                         }
                       >
-                        <div className="rounded-full">
+                        <div className="rounded-full relative">
                           <Avatar
                             src={players[1]?.avatar_url}
                             name={players[1]?.name || '?'}
@@ -1269,17 +1421,23 @@ export default function GamePage({ params }: GamePageProps) {
                               'ring-4 transition-all duration-300',
                               currentTurn === 1
                                 ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
-                                : 'ring-white/20'
+                                : 'ring-white/20',
+                              players[1] && !isPlayerOnline(players[1].id) && 'opacity-50'
                             )}
                           />
+                          <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
+                            <Timer 
+                              timeLeft={player2Time} 
+                              isActive={gameStarted && currentTurn === 1} 
+                            />
+                          </div>
+                          {players[1] && !isPlayerOnline(players[1].id) && (
+                            <div className="absolute -bottom-1 -right-1 bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/20 z-10">
+                              <div className="w-3 h-3 rounded-full bg-red-500/50 animate-pulse" />
+                            </div>
+                          )}
                         </div>
                       </Tooltip>
-                      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-                        <Timer 
-                          timeLeft={player2Time} 
-                          isActive={gameStarted && currentTurn === 1}
-                        />
-                      </div>
                     </div>
                   </div>
                 </div>
