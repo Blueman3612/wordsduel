@@ -90,6 +90,13 @@ interface GamePageProps {
   }>
 }
 
+interface DictionaryWord {
+  word: string
+  part_of_speech: string
+  definitions: string[]
+  phonetics?: string
+}
+
 export default function GamePage({ params }: GamePageProps) {
   const { lobbyId } = use(params)
   const { user } = useAuth()
@@ -248,23 +255,16 @@ export default function GamePage({ params }: GamePageProps) {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // First get lobby info to determine if we're the host
-    const fetchLobbyInfo = async () => {
+    // Initialize channel and set up subscriptions
+    const initializeChannel = async () => {
       const { data: lobbyData } = await supabase
         .from('lobbies')
-        .select('host_id')
+        .select('host_id, game_config')
         .eq('id', lobbyId)
         .single();
       
       const isHost = lobbyData?.host_id === user.id;
       console.log('Is host:', isHost);
-      return isHost;
-    };
-
-    // Initialize channel and set up subscriptions
-    const initializeChannel = async () => {
-      const isHost = await fetchLobbyInfo();
-      console.log('Initializing channel for lobby:', lobbyId);
 
       channel = supabase.channel(`game_room:${lobbyId}`, {
         config: {
@@ -276,15 +276,13 @@ export default function GamePage({ params }: GamePageProps) {
 
       // Set up all listeners before subscribing
       channel
-        .on('presence', { event: 'sync' }, () => {
+        .on('presence', { event: 'sync' }, async () => {
           if (!channel) return;
           const state = channel.presenceState();
           console.log('Raw presence state:', state);
           
-          // All players should maintain their own presence state
           const onlineIds = new Set<string>();
           
-          // Log each step of presence processing
           Object.entries(state).forEach(([key, presences]) => {
             console.log('Processing presence key:', key, 'presences:', presences);
             (presences as any[]).forEach(presence => {
@@ -297,6 +295,51 @@ export default function GamePage({ params }: GamePageProps) {
 
           console.log('Final online IDs:', Array.from(onlineIds));
           setOnlinePlayers(onlineIds);
+
+          // Host-specific: Initialize game state when both players are present
+          if (isHost && onlineIds.size === 2) {
+            try {
+              // Use a transaction to handle race conditions
+              const { data: existingState, error: checkError } = await supabase
+                .from('game_state')
+                .select('*')
+                .eq('lobby_id', lobbyId)
+                .maybeSingle();
+
+              if (checkError) {
+                console.error('Error checking game state:', checkError);
+                return;
+              }
+
+              if (!existingState) {
+                console.log('Initializing game state with config:', lobbyData?.game_config);
+                const { error: stateError } = await supabase
+                  .from('game_state')
+                  .upsert({
+                    lobby_id: lobbyId,
+                    current_turn: 0,
+                    player1_time: lobbyData?.game_config.base_time || 180000,
+                    player2_time: lobbyData?.game_config.base_time || 180000,
+                    player1_score: 0,
+                    player2_score: 0,
+                    status: 'active',
+                    banned_letters: [],
+                    last_move_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                    updated_by: user.id
+                  }, {
+                    onConflict: 'lobby_id'
+                  });
+
+                if (stateError) {
+                  console.error('Error initializing game state:', stateError);
+                  return;
+                }
+              }
+            } catch (error) {
+              console.error('Error in game state initialization:', error);
+            }
+          }
         })
         .on('presence', { event: 'join' }, ({ key, newPresences }) => {
           console.log('Player joined:', key, newPresences);
@@ -441,7 +484,139 @@ export default function GamePage({ params }: GamePageProps) {
     }
     setInvalidLetters([])
 
-    // TODO: Implement word validation and game state updates
+    try {
+      // Check if word has been used before
+      const { data: existingWord } = await supabase
+        .from('game_words')
+        .select('id')
+        .eq('lobby_id', lobbyId)
+        .eq('word', trimmedWord)
+        .single();
+
+      if (existingWord) {
+        showToast('This word has already been used!', 'error')
+        return
+      }
+
+      // Validate word length
+      if (trimmedWord.length < 5) {
+        showToast('Word must be at least 5 letters long!', 'error')
+        return
+      }
+
+      // Validate word in dictionary
+      const { data: dictWord } = await supabase
+        .from('words')
+        .select('part_of_speech, definitions')
+        .eq('word', trimmedWord)
+        .single() as { data: DictionaryWord | null };
+
+      if (!dictWord) {
+        showToast('Word not found in dictionary!', 'error')
+        return
+      }
+
+      // Check if it's a valid part of speech
+      const validTypes = ['noun', 'verb', 'adjective', 'adverb']
+      if (!validTypes.includes(dictWord.part_of_speech)) {
+        showToast(`Invalid part of speech: ${dictWord.part_of_speech}`, 'error')
+        return
+      }
+
+      // Check for proper nouns
+      const properNounIndicators = [
+        'brand', 'trademark', 'name', 'company', 'place',
+        'country', 'city', 'person', 'language'
+      ]
+      const isProperNoun = dictWord.definitions.some(def => 
+        properNounIndicators.some(indicator => 
+          def.toLowerCase().includes(indicator)
+        )
+      )
+      if (isProperNoun) {
+        showToast('Proper nouns are not allowed!', 'error')
+        return
+      }
+
+      // Calculate word score and breakdown
+      const previousWord = words.length > 0 ? words[words.length - 1].word : null
+      const levenDistance = previousWord ? calculateLevenshteinDistance(trimmedWord, previousWord) : 0
+      
+      // Calculate rarity bonus
+      const rarityBonus = trimmedWord.toUpperCase().split('')
+        .reduce((sum, letter) => {
+          const frequency = SCORING_WEIGHTS.RARITY.LETTER_WEIGHTS[letter as Letter] || 5
+          return sum + Math.pow(12 - frequency, SCORING_WEIGHTS.RARITY.EXPONENT)
+        }, 0)
+
+      // Calculate individual score components
+      const lengthScore = Math.round(
+        Math.pow(trimmedWord.length, SCORING_WEIGHTS.LENGTH.EXPONENT) * 
+        SCORING_WEIGHTS.LENGTH.MULTIPLIER
+      )
+
+      let levenBonus = 0
+      if (previousWord) {
+        const maxPossibleDistance = Math.max(trimmedWord.length, previousWord.length)
+        const normalizedLevenDistance = levenDistance / maxPossibleDistance
+        levenBonus = Math.round(
+          Math.exp(normalizedLevenDistance * SCORING_WEIGHTS.LEVENSHTEIN.EXPONENT) * 
+          SCORING_WEIGHTS.LEVENSHTEIN.BASE_POINTS
+        )
+      }
+
+      const rarityScore = Math.round(rarityBonus * SCORING_WEIGHTS.RARITY.MULTIPLIER)
+      const totalScore = lengthScore + levenBonus + rarityScore
+
+      // Insert the word first
+      const { data: gameWord, error: wordError } = await supabase
+        .from('game_words')
+        .insert({
+          lobby_id: lobbyId,
+          word: trimmedWord,
+          player_id: user.id,
+          is_valid: true, // We'll update this if validation fails
+          score: totalScore,
+          score_breakdown: {
+            lengthScore,
+            levenBonus,
+            rarityBonus: rarityScore
+          }
+        })
+        .select()
+        .single()
+
+      if (wordError) throw wordError
+
+      // Get the lobby config for time increment
+      const { data: lobbyData } = await supabase
+        .from('lobbies')
+        .select('game_config')
+        .eq('id', lobbyId)
+        .single()
+
+      const timeIncrement = lobbyData?.game_config.increment || 5000
+
+      // Update game state
+      const { error: stateError } = await supabase
+        .from('game_state')
+        .update({
+          current_turn: currentTurn === 0 ? 1 : 0,
+          [isPlayerOne ? 'player1_score' : 'player2_score']: players[isPlayerOne ? 0 : 1].score + totalScore,
+          [isPlayerOne ? 'player1_time' : 'player2_time']: (isPlayerOne ? player1Time : player2Time) + timeIncrement,
+          banned_letters: Array.from(new Set([...bannedLetters, ...trimmedWord.toUpperCase().split('')])),
+          last_move_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          updated_by: user.id
+        })
+        .eq('lobby_id', lobbyId)
+
+      if (stateError) throw stateError
+
+    } catch (error) {
+      console.error('Error submitting word:', error)
+      showToast('Failed to submit word', 'error')
+    }
   }
 
   return (
