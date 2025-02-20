@@ -281,24 +281,22 @@ export default function GamePage({ params }: GamePageProps) {
           const state = channel.presenceState();
           console.log('Raw presence state:', state);
           
-          // Only the host updates the shared online players state
-          if (isHost) {
-            const onlineIds = new Set<string>();
-            
-            // Log each step of presence processing
-            Object.entries(state).forEach(([key, presences]) => {
-              console.log('Processing presence key:', key, 'presences:', presences);
-              (presences as any[]).forEach(presence => {
-                if (presence.user_id) {
-                  console.log('Adding online user:', presence.user_id);
-                  onlineIds.add(presence.user_id);
-                }
-              });
+          // All players should maintain their own presence state
+          const onlineIds = new Set<string>();
+          
+          // Log each step of presence processing
+          Object.entries(state).forEach(([key, presences]) => {
+            console.log('Processing presence key:', key, 'presences:', presences);
+            (presences as any[]).forEach(presence => {
+              if (presence.user_id) {
+                console.log('Adding online user:', presence.user_id);
+                onlineIds.add(presence.user_id);
+              }
             });
+          });
 
-            console.log('Final online IDs:', Array.from(onlineIds));
-            setOnlinePlayers(onlineIds);
-          }
+          console.log('Final online IDs:', Array.from(onlineIds));
+          setOnlinePlayers(onlineIds);
         })
         .on('presence', { event: 'join' }, ({ key, newPresences }) => {
           console.log('Player joined:', key, newPresences);
