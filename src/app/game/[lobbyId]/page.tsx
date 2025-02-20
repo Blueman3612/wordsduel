@@ -58,6 +58,7 @@ interface GameState {
   status: 'active' | 'paused' | 'finished'
   last_move_at: string
   game_started_at: string
+  banned_letters: string[]
 }
 
 interface PlayerPresence {
@@ -198,7 +199,14 @@ export default function GamePage({ params }: GamePageProps) {
   ]
   
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
-  const bannedLetters: string[] = []
+  const vowels = ['A', 'E', 'I', 'O', 'U']
+  const consonants = alphabet.filter(letter => !vowels.includes(letter))
+  const [bannedLetters, setBannedLetters] = useState<string[]>([])
+
+  // Function to get random banned letters
+  const getInitialBannedLetters = () => {
+    return [] // Start with no banned letters
+  }
 
   // Fetch lobby configuration and initialize game state
   const initializeGameState = useCallback(async () => {
@@ -221,11 +229,15 @@ export default function GamePage({ params }: GamePageProps) {
         setPlayer2Time(lobby.game_config.base_time)
       }
 
+      // Get initial banned letters
+      const initialBannedLetters = getInitialBannedLetters()
+
       // Initialize game state
       const { error } = await supabase.rpc('initialize_game_state', {
         p_lobby_id: lobbyId,
         p_user_id: user.id,
-        p_base_time: lobby?.game_config?.base_time || 3 * 60 * 1000
+        p_base_time: lobby?.game_config?.base_time || 3 * 60 * 1000,
+        p_banned_letters: initialBannedLetters
       });
 
       if (error) {
@@ -330,26 +342,25 @@ export default function GamePage({ params }: GamePageProps) {
 
       if (error) {
         showToast('Error checking lobby membership', 'error')
-        window.location.href = '/lobbies'
+        router.push('/lobbies')
         return
       }
 
       if (!data || data.length === 0) {
         showToast('You are not a member of this lobby', 'error')
-        window.location.href = '/lobbies'
+        router.push('/lobbies')
         return
       }
     }
 
     checkLobbyMembership()
-  }, [user, lobbyId, showToast])
+  }, [user, lobbyId, showToast, router])
 
   // Subscribe to game updates
   useEffect(() => {
     if (!lobbyId || !user) return
 
-    console.log('Setting up realtime subscription')
-
+    // Set up realtime subscription
     channelRef.current = supabase
       .channel(`game:${lobbyId}`)
       // Add subscription to lobbies table
@@ -383,10 +394,17 @@ export default function GamePage({ params }: GamePageProps) {
 
           const newState = payload.new as GameState
           
+          // Check if a new letter was banned
+          if (newState.banned_letters && bannedLetters.length < newState.banned_letters.length) {
+            const newBannedLetter = newState.banned_letters[newState.banned_letters.length - 1]
+            showToast(`Letter "${newBannedLetter}" has been banned!`, 'error')
+          }
+          
           // Update all game state at once
           setCurrentTurn(newState.current_turn)
           setPlayer1Time(newState.player1_time)
           setPlayer2Time(newState.player2_time)
+          setBannedLetters(newState.banned_letters || [])
           setPlayers(prev => {
             const updated = [...prev]
             if (updated[0]) updated[0].score = newState.player1_score
@@ -500,7 +518,6 @@ export default function GamePage({ params }: GamePageProps) {
             if (wordError) throw wordError
 
             if (!completeWord) {
-              console.log('No complete word data found')
               return
             }
 
@@ -518,7 +535,6 @@ export default function GamePage({ params }: GamePageProps) {
             // Add word to the list
             setWords(prev => {
               if (prev.some(w => w.word === completeWord.word)) {
-                console.log('Word already in list, skipping')
                 return prev
               }
 
@@ -538,11 +554,6 @@ export default function GamePage({ params }: GamePageProps) {
 
               return [...prev, newWord]
             })
-
-            // Process move if it's valid
-            if (completeWord.is_valid) {
-              await processMove(completeWord)
-            }
           } catch (error) {
             console.error('Error processing word update:', error)
           }
@@ -551,8 +562,7 @@ export default function GamePage({ params }: GamePageProps) {
       .subscribe()
 
     return () => {
-      console.log('Cleaning up subscription')
-      channelRef.current?.unsubscribe()
+      // Clean up subscription
     }
   }, [lobbyId, user, showToast]) // Added showToast to dependency array
 
@@ -686,24 +696,36 @@ export default function GamePage({ params }: GamePageProps) {
     }
   }, [isLoadingPlayers, players.length, fetchGameState])
 
-  // Update the process_game_move call to include increment
+  // Update the processMove function with more detailed logging
   const processMove = async (completeWord: any) => {
     if (!completeWord.is_valid) return;
 
-    const { error: processError } = await supabase.rpc('process_game_move', {
-      p_lobby_id: lobbyId,
-      p_player_id: completeWord.player_id,
-      p_word: completeWord.word,
-      p_score: completeWord.score || 0,
-      p_is_valid: true,
-      p_increment: gameConfig.increment
-    })
+    console.log('Processing move:', {
+        lobbyId,
+        playerId: completeWord.player_id,
+        word: completeWord.word,
+        score: completeWord.score,
+        increment: gameConfig.increment,
+        isLocalPlayer: completeWord.player_id === user?.id
+    });
+
+    const { data, error: processError } = await supabase.rpc('process_game_move', {
+        p_lobby_id: lobbyId,
+        p_player_id: completeWord.player_id,
+        p_word: completeWord.word,
+        p_score: completeWord.score || 0,
+        p_is_valid: true,
+        p_increment: gameConfig.increment
+    });
 
     if (processError) {
-      console.error('Error processing move:', processError)
-      showToast('Error processing move', 'error')
+        console.error('Error processing move:', processError);
+        showToast('Error processing move', 'error');
+    } else {
+        console.log('Move processed successfully. Response:', data);
+        console.log('Current banned letters:', bannedLetters);
     }
-  }
+  };
 
   // Update the word submission handler to use processMove
   const handleSubmit = async (e: React.FormEvent) => {
@@ -834,8 +856,23 @@ export default function GamePage({ params }: GamePageProps) {
         return
       }
 
-      if (insertedWord) {
-        await processMove(insertedWord)
+      if (insertedWord && isValid) {
+        console.log('Processing move after word insertion');
+        const { data: gameState, error: processError } = await supabase.rpc('process_game_move', {
+          p_lobby_id: lobbyId,
+          p_player_id: user.id,
+          p_word: trimmedWord,
+          p_score: wordScore || 0,
+          p_is_valid: true,
+          p_increment: gameConfig.increment
+        });
+
+        if (processError) {
+          console.error('Error processing move:', processError);
+          showToast('Error processing move', 'error');
+        } else {
+          console.log('Move processed successfully. Game state:', gameState);
+        }
       }
     } catch (error) {
       console.error('Error submitting word:', error)
@@ -872,38 +909,7 @@ export default function GamePage({ params }: GamePageProps) {
           filter: `lobby_id=eq.${lobbyId}`
         },
         async (payload: RealtimePostgresChangesPayload<PlayerPresence>) => {
-          console.log('Presence change detected:', payload);
-          
-          // Handle DELETE event or offline status
-          if (payload.eventType === 'DELETE' || (payload.eventType === 'UPDATE' && payload.new?.status === 'offline')) {
-            const userId = (payload.old as PlayerPresence)?.user_id || (payload.new as PlayerPresence)?.user_id;
-            if (!userId) {
-              console.log('No user_id in presence payload');
-              return;
-            }
-            
-            console.log('Player disconnected, calling handle_player_disconnect');
-            try {
-              // Log the parameters we're about to send
-              console.log('Disconnect params:', { lobbyId, userId });
-              
-              const { error } = await supabase.rpc('handle_player_disconnect', {
-                p_lobby_id: lobbyId,
-                p_user_id: userId
-              });
-              
-              if (error) {
-                console.error('handle_player_disconnect error:', error);
-                showToast('Error handling disconnect', 'error');
-              }
-            } catch (error) {
-              console.error('Error in handle_player_disconnect:', error);
-              showToast('Error handling disconnect', 'error');
-            }
-            return;
-          }
-          
-          // Only update presence state if not a disconnect event
+          // Handle presence change
           const newPresence = payload.new;
           if (newPresence && isPlayerPresence(newPresence)) {
             setPlayerPresence(prev => {
@@ -937,6 +943,13 @@ export default function GamePage({ params }: GamePageProps) {
     const presence = playerPresence.find(p => p.user_id === playerId);
     return presence?.status === 'online';
   };
+
+  // Add banned letters when game starts
+  useEffect(() => {
+    if (!isLoadingPlayers && players.length > 0 && isInitialLoad) {
+      setBannedLetters(getInitialBannedLetters())
+    }
+  }, [isLoadingPlayers, players.length, isInitialLoad])
 
   return (
     <PageTransition>
