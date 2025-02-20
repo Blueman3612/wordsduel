@@ -1,9 +1,7 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
-import { use } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Send, X, Flag } from 'lucide-react'
-import { supabase } from '@/lib/supabase/client'
 import { ActionModal } from '@/components/game/ActionModal'
 import { PageTransition } from '@/components/layout/PageTransition'
 import { useAuth } from '@/lib/context/auth'
@@ -11,13 +9,14 @@ import { useToast } from '@/lib/context/toast'
 import { Avatar } from '@/components/ui/Avatar'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils/cn'
-import { RealtimeChannel } from '@supabase/supabase-js'
-import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import { calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
 import { AnimatedScore } from '@/components/game/AnimatedScore'
 import { Timer } from '@/components/game/Timer'
 import { Button } from '@/components/ui/Button'
 import { useRouter } from 'next/navigation'
+import { supabase } from '@/lib/supabase/client'
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
+import { use } from 'react'
 
 interface WordCard {
   word: string
@@ -43,41 +42,8 @@ interface Player {
   elo: number
   score: number
   avatar_url?: string | null
+  isOnline?: boolean
   originalElo?: number
-}
-
-interface GameState {
-  lobby_id: string
-  current_turn: number
-  player1_score: number
-  player2_score: number
-  player1_time: number
-  player2_time: number
-  updated_at: string
-  updated_by?: string
-  status: 'active' | 'paused' | 'finished'
-  last_move_at: string
-  game_started_at: string
-  banned_letters: string[]
-}
-
-interface PlayerPresence {
-  user_id: string;
-  status: 'online' | 'offline';
-  last_seen: string;
-  lobby_id: string;
-}
-
-type PresencePayload = RealtimePostgresChangesPayload<{
-  user_id: string;
-  status: 'online' | 'offline';
-  last_seen: string;
-}>;
-
-interface GamePageProps {
-  params: Promise<{
-    lobbyId: string
-  }>
 }
 
 // Scoring weights - can be adjusted to taste
@@ -88,111 +54,71 @@ const SCORING_CONFIG = {
 type LetterRarity = typeof SCORING_CONFIG.letterRarityWeights
 type Letter = keyof LetterRarity
 
-// Add these constants at the top of the file, after imports
-const STORAGE_KEY_PREFIX = 'wordsduel_timer_' // Prefix for localStorage keys
+// Add these interfaces for type safety
+interface GameState {
+  current_turn: number
+  player1_time: number
+  player2_time: number
+  player1_score: number
+  player2_score: number
+  status: 'active' | 'paused' | 'finished'
+  banned_letters: string[]
+}
 
-// Update type guard to handle the realtime payload
-function isPlayerPresence(obj: unknown): obj is PlayerPresence {
-  return obj !== null &&
-    typeof obj === 'object' &&
-    'user_id' in obj &&
-    'status' in obj &&
-    'last_seen' in obj &&
-    'lobby_id' in obj &&
-    ((obj as PlayerPresence).status === 'online' || (obj as PlayerPresence).status === 'offline');
+interface GameWord {
+  id: string
+  word: string
+  player_id: string
+  is_valid: boolean
+  score?: number
+  score_breakdown?: {
+    lengthScore: number
+    levenBonus: number
+    rarityBonus: number
+  }
+  part_of_speech?: string
+  definition?: string
+  phonetics?: string
+}
+
+type GameStatePayload = RealtimePostgresChangesPayload<GameState>
+type GameWordPayload = RealtimePostgresChangesPayload<GameWord>
+
+interface GamePageProps {
+  params: Promise<{
+    lobbyId: string
+  }>
 }
 
 export default function GamePage({ params }: GamePageProps) {
   const { lobbyId } = use(params)
   const { user } = useAuth()
   const { showToast } = useToast()
+  const router = useRouter()
+  
+  // Basic state
   const [word, setWord] = useState('')
   const [words, setWords] = useState<WordCard[]>([])
   const [invalidLetters, setInvalidLetters] = useState<string[]>([])
   const [isFlashing, setIsFlashing] = useState(false)
   const [reportedWord, setReportedWord] = useState('')
   const [players, setPlayers] = useState<Player[]>([])
-  const [isInitialLoad, setIsInitialLoad] = useState(true)
-  const [isLoadingPlayers, setIsLoadingPlayers] = useState(true)
   const [currentTurn, setCurrentTurn] = useState<number>(0)
   const [gameStarted, setGameStarted] = useState(false)
-  const [player1Time, setPlayer1Time] = useState(0)
-  const [player2Time, setPlayer2Time] = useState(0)
-  const [isLoadingGame, setIsLoadingGame] = useState(true)
+  const [player1Time, setPlayer1Time] = useState(180000) // 3 minutes in ms
+  const [player2Time, setPlayer2Time] = useState(180000)
   const [showGameOverModal, setShowGameOverModal] = useState(false)
   const [gameOverInfo, setGameOverInfo] = useState<{
     winner: Player | null
     loser: Player | null
     reason: 'time' | 'forfeit'
   } | null>(null)
-  const [gameConfig, setGameConfig] = useState<{
-    base_time: number
-    increment: number
-  }>({ base_time: 3 * 60 * 1000, increment: 5 * 1000 })
   
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
-  const channelRef = useRef<RealtimeChannel | null>(null)
-  const playersRef = useRef<Player[]>([])
-  const currentTurnRef = useRef<number>(0)
-  const player1TimeRef = useRef<number>(0)
-  const player2TimeRef = useRef<number>(0)
-  const hasProcessedGameEnd = useRef<boolean>(false)
-  const router = useRouter()
+  const [bannedLetters, setBannedLetters] = useState<string[]>([])
 
-  // Add timerState to component state
-  const [timerState, setTimerState] = useState<{
-    last_tick: number;
-    is_paused: boolean;
-  }>({ last_tick: Date.now(), is_paused: false });
-
-  const [playerPresence, setPlayerPresence] = useState<PlayerPresence[]>([]);
-
-  // Update refs when state changes
-  useEffect(() => {
-    playersRef.current = players
-  }, [players])
-
-  useEffect(() => {
-    currentTurnRef.current = currentTurn
-  }, [currentTurn])
-
-  useEffect(() => {
-    player1TimeRef.current = player1Time
-  }, [player1Time])
-
-  useEffect(() => {
-    player2TimeRef.current = player2Time
-  }, [player2Time])
-
-  // Auto-scroll to bottom when words change
-  useEffect(() => {
-    const scrollContainer = scrollContainerRef.current
-    if (!scrollContainer) return
-
-    scrollContainer.scrollTo({
-      top: scrollContainer.scrollHeight,
-      behavior: 'smooth'
-    })
-
-    return () => {
-      // Cleanup if needed
-    }
-  }, [words])
-
-  // Function to check if element is near right edge
-  const updateExpandDirection = (event: React.MouseEvent<HTMLDivElement>) => {
-    const container = scrollContainerRef.current
-    if (!container) return
-    
-    const rect = (event.target as HTMLElement).getBoundingClientRect()
-    const containerRect = container.getBoundingClientRect()
-    const spaceOnRight = containerRect.right - rect.right
-    
-    setExpandDirection(spaceOnRight < 310 ? 'left' : 'right')
-  }
-
-  // Simulated data
+  // Game parameters
   const parameters = [
     'at least 5 letters long',
     'a singular non-proper noun, adjective, adverb, or infinitive verb'
@@ -201,120 +127,6 @@ export default function GamePage({ params }: GamePageProps) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
   const vowels = ['A', 'E', 'I', 'O', 'U']
   const consonants = alphabet.filter(letter => !vowels.includes(letter))
-  const [bannedLetters, setBannedLetters] = useState<string[]>([])
-
-  // Function to get random banned letters
-  const getInitialBannedLetters = () => {
-    return [] // Start with no banned letters
-  }
-
-  // Fetch lobby configuration and initialize game state
-  const initializeGameState = useCallback(async () => {
-    if (!user) return;
-
-    try {
-      // First get the lobby configuration
-      const { data: lobby, error: lobbyError } = await supabase
-        .from('lobbies')
-        .select('game_config')
-        .eq('id', lobbyId)
-        .single()
-
-      if (lobbyError) throw lobbyError
-
-      if (lobby?.game_config) {
-        setGameConfig(lobby.game_config)
-        // Initialize timers with the base time from config
-        setPlayer1Time(lobby.game_config.base_time)
-        setPlayer2Time(lobby.game_config.base_time)
-      }
-
-      // Get initial banned letters
-      const initialBannedLetters = getInitialBannedLetters()
-
-      // Initialize game state
-      const { error } = await supabase.rpc('initialize_game_state', {
-        p_lobby_id: lobbyId,
-        p_user_id: user.id,
-        p_base_time: lobby?.game_config?.base_time || 3 * 60 * 1000,
-        p_banned_letters: initialBannedLetters
-      });
-
-      if (error) {
-        console.error('Error initializing game state:', error);
-        showToast('Error initializing game', 'error');
-      }
-    } catch (error) {
-      console.error('Error initializing game state:', error);
-      showToast('Error initializing game', 'error');
-    }
-  }, [user, lobbyId, showToast]);
-
-  // Fetch lobby members and their profiles
-  useEffect(() => {
-    if (!user) return
-
-    const fetchLobbyMembers = async () => {
-      setIsLoadingPlayers(true)
-      try {
-        // First get the lobby info to determine host
-        const { data: lobby, error: lobbyError } = await supabase
-          .from('lobbies')
-          .select('host_id')
-          .eq('id', lobbyId)
-          .single()
-
-        if (lobbyError) throw lobbyError
-
-        // Then get the lobby members
-        const { data: members, error: membersError } = await supabase
-          .from('lobby_members')
-          .select('user_id')
-          .eq('lobby_id', lobbyId)
-
-        if (membersError) throw membersError
-
-        if (!members?.length) {
-          setIsLoadingPlayers(false)
-          return
-        }
-
-        // Then get their profiles
-        const { data: profiles, error: profilesError } = await supabase
-          .from('profiles')
-          .select('id, display_name, avatar_url, elo')
-          .in('id', members.map(m => m.user_id))
-
-        if (profilesError) throw profilesError
-
-        if (profiles) {
-          // Sort profiles to ensure host is always player 1
-          const sortedProfiles = profiles.sort((a, b) => {
-            if (a.id === lobby.host_id) return -1
-            if (b.id === lobby.host_id) return 1
-            return 0
-          })
-
-          const formattedPlayers: Player[] = sortedProfiles.map(profile => ({
-            id: profile.id,
-            name: profile.display_name,
-            elo: profile.elo || 1200,
-            score: 0,
-            avatar_url: profile.avatar_url
-          }))
-          setPlayers(formattedPlayers)
-          // Initialize game state after setting players
-          await initializeGameState()
-        }
-      } catch (error) {
-        console.error('Error fetching players:', error)
-        showToast('Error loading players', 'error')
-      }
-      setIsLoadingPlayers(false)
-    }
-
-    fetchLobbyMembers()
-  }, [user, lobbyId, showToast, initializeGameState])
 
   // Function to check for banned letters
   const checkBannedLetters = (word: string): string[] => {
@@ -326,61 +138,39 @@ export default function GamePage({ params }: GamePageProps) {
   // Function to trigger flash animation
   const triggerFlash = () => {
     setIsFlashing(true)
-    setTimeout(() => setIsFlashing(false), 1000) // Reset after 1 second
+    setTimeout(() => setIsFlashing(false), 1000)
   }
 
-  // Verify lobby membership
+  // Update expand direction for word cards
+  const updateExpandDirection = (event: React.MouseEvent<HTMLDivElement>) => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    
+    const rect = (event.target as HTMLElement).getBoundingClientRect()
+    const containerRect = container.getBoundingClientRect()
+    const spaceOnRight = containerRect.right - rect.right
+    
+    setExpandDirection(spaceOnRight < 310 ? 'left' : 'right')
+  }
+
+  // Auto-scroll to bottom when words change
   useEffect(() => {
-    if (!user) return
+    const scrollContainer = scrollContainerRef.current
+    if (!scrollContainer) return
 
-    const checkLobbyMembership = async () => {
-      const { data, error } = await supabase
-        .from('lobby_members')
-        .select('*')
-        .eq('lobby_id', lobbyId)
-        .eq('user_id', user.id)
+    scrollContainer.scrollTo({
+      top: scrollContainer.scrollHeight,
+      behavior: 'smooth'
+    })
+  }, [words])
 
-      if (error) {
-        showToast('Error checking lobby membership', 'error')
-        router.push('/lobbies')
-        return
-      }
-
-      if (!data || data.length === 0) {
-        showToast('You are not a member of this lobby', 'error')
-        router.push('/lobbies')
-        return
-      }
-    }
-
-    checkLobbyMembership()
-  }, [user, lobbyId, showToast, router])
-
-  // Subscribe to game updates
+  // Add subscription effect
   useEffect(() => {
     if (!lobbyId || !user) return
 
-    // Set up realtime subscription
-    channelRef.current = supabase
-      .channel(`game:${lobbyId}`)
-      // Add subscription to lobbies table
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'lobbies',
-          filter: `id=eq.${lobbyId}`
-        },
-        (payload: RealtimePostgresChangesPayload<{ id: string }>) => {
-          // If the lobby was deleted, redirect to lobbies page
-          if (payload.eventType === 'DELETE') {
-            showToast('Lobby no longer exists', 'info');
-            router.push('/lobbies');
-            return;
-          }
-        }
-      )
+    // Set up single channel for all game-related subscriptions
+    const channel = supabase.channel(`game_room:${lobbyId}`)
+      // Game state changes
       .on(
         'postgres_changes',
         {
@@ -389,22 +179,17 @@ export default function GamePage({ params }: GamePageProps) {
           table: 'game_state',
           filter: `lobby_id=eq.${lobbyId}`
         },
-        async (payload) => {
-          if (!payload.new) return
-
+        (payload: GameStatePayload) => {
           const newState = payload.new as GameState
+          if (!newState) return
           
-          // Check if a new letter was banned
-          if (newState.banned_letters && bannedLetters.length < newState.banned_letters.length) {
-            const newBannedLetter = newState.banned_letters[newState.banned_letters.length - 1]
-            showToast(`Letter "${newBannedLetter}" has been banned!`, 'error')
-          }
-          
-          // Update all game state at once
+          // Update game state
           setCurrentTurn(newState.current_turn)
           setPlayer1Time(newState.player1_time)
           setPlayer2Time(newState.player2_time)
           setBannedLetters(newState.banned_letters || [])
+          
+          // Update player scores
           setPlayers(prev => {
             const updated = [...prev]
             if (updated[0]) updated[0].score = newState.player1_score
@@ -413,89 +198,20 @@ export default function GamePage({ params }: GamePageProps) {
           })
 
           // Handle game end
-          if (newState.status === 'finished' && !hasProcessedGameEnd.current && !showGameOverModal) {
-            hasProcessedGameEnd.current = true;
-            const currentPlayers = playersRef.current;
-
-            if (currentPlayers.length >= 2) {
-              const winner = newState.player1_time <= 0 ? currentPlayers[1] : currentPlayers[0];
-              const loser = newState.player1_time <= 0 ? currentPlayers[0] : currentPlayers[1];
-              
-              // Store original ELO values
-              const originalWinnerElo = winner.elo;
-              const originalLoserElo = loser.elo;
-
-              // Call calculate_and_update_elo RPC function
-              const { error: eloError } = await supabase.rpc('calculate_and_update_elo', {
-                p_end_reason: 'time',
-                p_lobby_id: lobbyId,
-                p_loser_id: loser.id,
-                p_loser_score: newState.player1_time <= 0 ? newState.player1_score : newState.player2_score,
-                p_winner_id: winner.id,
-                p_winner_score: newState.player1_time <= 0 ? newState.player2_score : newState.player1_score
-              });
-
-              if (eloError) {
-                console.error('Error updating player ratings:', eloError);
-                showToast('Error updating player ratings', 'error');
-                return;
-              }
-
-              // Always fetch the updated profiles to show the latest ELO ratings
-              const { data: updatedProfiles, error: profilesError } = await supabase
-                .from('profiles')
-                .select('id, display_name, avatar_url, elo, games_played')
-                .in('id', [winner.id, loser.id]);
-
-              if (profilesError) {
-                console.error('Error fetching updated profiles:', profilesError);
-                return;
-              }
-
-              if (updatedProfiles) {
-                const updatedWinner = updatedProfiles.find(p => p.id === winner.id);
-                const updatedLoser = updatedProfiles.find(p => p.id === loser.id);
-
-                if (!updatedWinner || !updatedLoser) {
-                  console.error('Could not find updated profiles for both players');
-                  return;
-                }
-
-                // Update the game over info with new ratings and original ratings for change calculation
-                setGameOverInfo({
-                  winner: { 
-                    ...winner,
-                    elo: updatedWinner.elo,
-                    originalElo: originalWinnerElo
-                  },
-                  loser: { 
-                    ...loser,
-                    elo: updatedLoser.elo,
-                    originalElo: originalLoserElo
-                  },
-                  reason: 'time'
-                });
-
-                // Update players state to reflect new ratings
-                setPlayers(prev => {
-                  const updated = [...prev];
-                  const winnerIndex = updated.findIndex(p => p.id === winner.id);
-                  const loserIndex = updated.findIndex(p => p.id === loser.id);
-                  if (winnerIndex !== -1) updated[winnerIndex].elo = updatedWinner.elo;
-                  if (loserIndex !== -1) updated[loserIndex].elo = updatedLoser.elo;
-                  return updated;
-                });
-
-                // Show the game over modal
-                setShowGameOverModal(true);
-              }
-            }
+          if (newState.status === 'finished' && !showGameOverModal) {
+            const winner = newState.player1_time <= 0 ? players[1] : players[0]
+            const loser = newState.player1_time <= 0 ? players[0] : players[1]
+            
+            setGameOverInfo({
+              winner,
+              loser,
+              reason: 'time'
+            })
+            setShowGameOverModal(true)
           }
-
-          // Reset animation frame timer
-          setTimerState(prev => ({ ...prev, last_tick: Date.now() }));
         }
       )
+      // Word plays
       .on(
         'postgres_changes',
         {
@@ -504,230 +220,64 @@ export default function GamePage({ params }: GamePageProps) {
           table: 'game_words',
           filter: `lobby_id=eq.${lobbyId}`
         },
-        async (payload) => {
-          if (!payload.new) return
+        (payload: GameWordPayload) => {
+          const newWord = payload.new as GameWord
+          if (!newWord) return
 
-          try {
-            // Get the complete word data
-            const { data: completeWord, error: wordError } = await supabase
-              .from('game_words')
-              .select('*')
-              .eq('id', payload.new.id)
-              .single()
+          // Add word to the list
+          setWords(prev => {
+            if (prev.some(w => w.word === newWord.word)) return prev
 
-            if (wordError) throw wordError
-
-            if (!completeWord) {
-              return
+            const wordCard: WordCard = {
+              word: newWord.word,
+              player: players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+              timestamp: Date.now(),
+              isInvalid: !newWord.is_valid,
+              score: newWord.score,
+              scoreBreakdown: newWord.score_breakdown,
+              dictionary: {
+                partOfSpeech: newWord.part_of_speech,
+                definition: newWord.definition,
+                phonetics: newWord.phonetics
+              }
             }
 
-            // Get the player's display name
-            const { data: playerProfile, error: profileError } = await supabase
-              .from('profiles')
-              .select('display_name')
-              .eq('id', completeWord.player_id)
-              .single()
+            return [...prev, wordCard]
+          })
 
-            if (profileError) {
-              console.error('Error fetching player profile:', profileError)
-            }
-
-            // Add word to the list
-            setWords(prev => {
-              if (prev.some(w => w.word === completeWord.word)) {
-                return prev
-              }
-
-              const newWord: WordCard = {
-                word: completeWord.word,
-                player: playerProfile?.display_name || 'Unknown',
-                timestamp: Date.parse(completeWord.created_at),
-                isInvalid: !completeWord.is_valid,
-                score: completeWord.score,
-                scoreBreakdown: completeWord.score_breakdown,
-                dictionary: {
-                  partOfSpeech: completeWord.part_of_speech,
-                  definition: completeWord.definition,
-                  phonetics: completeWord.phonetics
-                }
-              }
-
-              return [...prev, newWord]
-            })
-          } catch (error) {
-            console.error('Error processing word update:', error)
-          }
+          // Update game started state
+          setGameStarted(true)
+        }
+      )
+      // Player presence
+      .on(
+        'presence',
+        { event: 'sync' },
+        () => {
+          const state = channel.presenceState()
+          
+          // Update player online status
+          setPlayers(prev => {
+            return prev.map(player => ({
+              ...player,
+              isOnline: Object.keys(state).some(id => id === player.id)
+            }))
+          })
         }
       )
       .subscribe()
 
+    // Track local player's presence
+    if (user) {
+      channel.track({ user_id: user.id })
+    }
+
     return () => {
-      // Clean up subscription
+      channel.unsubscribe()
     }
-  }, [lobbyId, user, showToast]) // Added showToast to dependency array
+  }, [lobbyId, user, players, showGameOverModal])
 
-  // Check if game has started (any valid words played)
-  useEffect(() => {
-    const hasValidWords = words.some(w => !w.isInvalid)
-    setGameStarted(hasValidWords)
-  }, [words])
-
-  // Replace the existing timer effect with this server-driven version
-  useEffect(() => {
-    if (!user || !lobbyId || players.length < 2 || !gameStarted) return;
-
-    // Set up interval to fetch the latest game state
-    const interval = setInterval(async () => {
-      if (user?.id === players[currentTurn]?.id) {
-        const now = Date.now();
-        const { data: gameState, error } = await supabase
-          .from('game_state')
-          .select('player1_time, player2_time, last_move_at')
-          .eq('lobby_id', lobbyId)
-          .single();
-
-        if (error) {
-          console.error('Error fetching game state:', error);
-          return;
-        }
-
-        if (gameState) {
-          const timeSinceLastUpdate = now - Date.parse(gameState.last_move_at);
-          const currentPlayerTime = currentTurn === 0 ? gameState.player1_time : gameState.player2_time;
-          const newTime = Math.max(0, currentPlayerTime - timeSinceLastUpdate);
-
-          // Update the server with the new time
-          const { error: updateError } = await supabase
-            .from('game_state')
-            .update({
-              [currentTurn === 0 ? 'player1_time' : 'player2_time']: Math.round(newTime),
-              last_move_at: new Date().toISOString(),
-              status: newTime <= 0 ? 'finished' : 'active'
-            })
-            .eq('lobby_id', lobbyId);
-
-          if (updateError) {
-            console.error('Error updating game state:', updateError);
-          }
-        }
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [user, lobbyId, players, gameStarted, currentTurn]);
-
-  // Function to fetch initial game state
-  const fetchGameState = useCallback(async () => {
-    if (!user || !lobbyId) return
-
-    try {
-      // Only set loading state on initial load
-      if (isInitialLoad) {
-        setIsLoadingGame(true)
-      }
-
-      // First fetch all words for this lobby
-      const { data: gameWords, error: wordsError } = await supabase
-        .from('game_words')
-        .select('*')
-        .eq('lobby_id', lobbyId)
-        .order('created_at', { ascending: true })
-
-      if (wordsError) throw wordsError
-
-      if (gameWords) {
-        // Get all unique player IDs from the words
-        const playerIds = [...new Set(gameWords.map(word => word.player_id))]
-        
-        // Fetch player profiles in a separate query
-        const { data: playerProfiles, error: profilesError } = await supabase
-          .from('profiles')
-          .select('id, display_name')
-          .in('id', playerIds)
-
-        if (profilesError) throw profilesError
-
-        // Create a map of player IDs to display names
-        const playerNames = new Map(
-          playerProfiles?.map(profile => [profile.id, profile.display_name]) || []
-        )
-
-        const processedWords: WordCard[] = gameWords.map(word => ({
-            word: word.word,
-          player: playerNames.get(word.player_id) || 'Unknown',
-            timestamp: Date.parse(word.created_at),
-            isInvalid: !word.is_valid,
-            score: word.score,
-            scoreBreakdown: word.score_breakdown,
-            dictionary: {
-              partOfSpeech: word.part_of_speech,
-              definition: word.definition,
-              phonetics: word.phonetics
-            }
-        }))
-
-        setWords(processedWords)
-        
-        // Get the current game state instead of calculating turn
-        const { data: gameState, error: gameStateError } = await supabase
-          .from('game_state')
-          .select('current_turn')
-          .eq('lobby_id', lobbyId)
-          .single()
-
-        if (!gameStateError && gameState) {
-          setCurrentTurn(gameState.current_turn)
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching game state:', error)
-    } finally {
-      if (isInitialLoad) {
-        setIsLoadingGame(false)
-        setIsInitialLoad(false)
-      }
-    }
-  }, [user, lobbyId, isInitialLoad])
-
-  // Fetch initial game state after players are loaded
-  useEffect(() => {
-    if (!isLoadingPlayers && players.length > 0) {
-      fetchGameState()
-    }
-  }, [isLoadingPlayers, players.length, fetchGameState])
-
-  // Update the processMove function with more detailed logging
-  const processMove = async (completeWord: any) => {
-    if (!completeWord.is_valid) return;
-
-    console.log('Processing move:', {
-        lobbyId,
-        playerId: completeWord.player_id,
-        word: completeWord.word,
-        score: completeWord.score,
-        increment: gameConfig.increment,
-        isLocalPlayer: completeWord.player_id === user?.id
-    });
-
-    const { data, error: processError } = await supabase.rpc('process_game_move', {
-        p_lobby_id: lobbyId,
-        p_player_id: completeWord.player_id,
-        p_word: completeWord.word,
-        p_score: completeWord.score || 0,
-        p_is_valid: true,
-        p_increment: gameConfig.increment
-    });
-
-    if (processError) {
-        console.error('Error processing move:', processError);
-        showToast('Error processing move', 'error');
-    } else {
-        console.log('Move processed successfully. Response:', data);
-        console.log('Current banned letters:', bannedLetters);
-    }
-  };
-
-  // Update the word submission handler to use processMove
+  // Basic word submission handler (to be expanded)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const trimmedWord = word.trim().toLowerCase()
@@ -753,203 +303,8 @@ export default function GamePage({ params }: GamePageProps) {
     }
     setInvalidLetters([])
 
-    try {
-      // First check if word has already been played in this lobby
-      const { data: existingWords, error: existingWordError } = await supabase
-        .from('game_words')
-        .select('id')
-        .eq('lobby_id', lobbyId)
-        .eq('word', trimmedWord)
-
-      if (existingWordError) {
-        console.error('Error checking existing word:', existingWordError)
-        showToast('Error checking word', 'error')
-        return
-      }
-
-      if (existingWords && existingWords.length > 0) {
-        showToast('This word has already been played!', 'error')
-        return
-      }
-
-      // Check if word exists in dictionary
-      const { data: dictData, error: dictError } = await supabase
-        .from('words')
-        .select('part_of_speech, definitions, phonetics')
-        .eq('word', trimmedWord)
-
-      if (dictError) {
-        console.error('Error checking dictionary:', dictError)
-        showToast('Error checking word', 'error')
-        return
-      }
-
-      // Word is valid if we have any matching entries
-      const isValid = dictData && dictData.length > 0
-      const firstEntry = dictData?.[0]
-
-      // Calculate word score if valid
-      let wordScore = undefined
-      let scoreBreakdown = undefined
-      if (isValid) {
-        // Get the last valid word for Levenshtein distance calculation
-        const lastValidWord = words.filter(w => !w.isInvalid).pop()?.word || null
-        wordScore = scoreWord(trimmedWord, lastValidWord)
-        
-        if (lastValidWord) {
-          const levenDistance = calculateLevenshteinDistance(trimmedWord, lastValidWord)
-          const maxPossibleDistance = Math.max(trimmedWord.length, lastValidWord.length)
-          const normalizedLevenDistance = levenDistance / maxPossibleDistance
-          
-          // Calculate rarity bonus with exponential scaling
-          const rarityBonus = trimmedWord.toUpperCase().split('')
-            .reduce((sum, letter) => {
-              const frequency = SCORING_CONFIG.letterRarityWeights[letter as Letter] || 5
-              // Apply exponential scaling to the rarity value
-              return sum + Math.pow(12 - frequency, SCORING_WEIGHTS.RARITY.EXPONENT)
-            }, 0)
-
-          // Calculate breakdown components using the same weights as scoreWord
-          scoreBreakdown = {
-            lengthScore: Math.round(Math.pow(trimmedWord.length, SCORING_WEIGHTS.LENGTH.EXPONENT) * SCORING_WEIGHTS.LENGTH.MULTIPLIER),
-            levenBonus: Math.round(Math.exp(normalizedLevenDistance * SCORING_WEIGHTS.LEVENSHTEIN.EXPONENT) * SCORING_WEIGHTS.LEVENSHTEIN.BASE_POINTS),
-            rarityBonus: Math.round(rarityBonus * SCORING_WEIGHTS.RARITY.MULTIPLIER)
-          }
-        } else {
-          // First word - no Levenshtein bonus
-          // Calculate rarity bonus with exponential scaling
-          const rarityBonus = trimmedWord.toUpperCase().split('')
-            .reduce((sum, letter) => {
-              const frequency = SCORING_CONFIG.letterRarityWeights[letter as Letter] || 5
-              // Apply exponential scaling to the rarity value
-              return sum + Math.pow(12 - frequency, SCORING_WEIGHTS.RARITY.EXPONENT)
-            }, 0)
-
-          scoreBreakdown = {
-            lengthScore: Math.round(Math.pow(trimmedWord.length, SCORING_WEIGHTS.LENGTH.EXPONENT) * SCORING_WEIGHTS.LENGTH.MULTIPLIER),
-            levenBonus: 0,
-            rarityBonus: Math.round(rarityBonus * SCORING_WEIGHTS.RARITY.MULTIPLIER)
-          }
-        }
-      }
-
-      // Insert word into game_words
-      const { data: insertedWord, error: insertError } = await supabase
-        .from('game_words')
-        .insert({
-          lobby_id: lobbyId,
-          word: trimmedWord,
-          player_id: user.id,
-          is_valid: isValid,
-          score: wordScore,
-          score_breakdown: scoreBreakdown,
-          part_of_speech: firstEntry?.part_of_speech,
-          definition: firstEntry?.definitions?.[0],
-          phonetics: firstEntry?.phonetics
-        })
-        .select()
-        .single()
-
-      if (insertError) {
-        console.error('Error inserting word:', insertError)
-        showToast('Error submitting word', 'error')
-        return
-      }
-
-      if (insertedWord && isValid) {
-        console.log('Processing move after word insertion');
-        const { data: gameState, error: processError } = await supabase.rpc('process_game_move', {
-          p_lobby_id: lobbyId,
-          p_player_id: user.id,
-          p_word: trimmedWord,
-          p_score: wordScore || 0,
-          p_is_valid: true,
-          p_increment: gameConfig.increment
-        });
-
-        if (processError) {
-          console.error('Error processing move:', processError);
-          showToast('Error processing move', 'error');
-        } else {
-          console.log('Move processed successfully. Game state:', gameState);
-        }
-      }
-    } catch (error) {
-      console.error('Error submitting word:', error)
-      showToast('Error submitting word', 'error')
-    }
+    // TODO: Implement word validation and game state updates
   }
-
-  // Add presence tracking effect
-  useEffect(() => {
-    if (!user || !lobbyId) return;
-
-    // Set up interval to update presence
-    const presenceInterval = setInterval(async () => {
-      try {
-        await supabase.from('game_presence').upsert({
-          lobby_id: lobbyId,
-          user_id: user.id,
-          last_seen: new Date().toISOString(),
-          status: 'online'
-        });
-      } catch (error) {
-        console.error('Error updating presence:', error);
-      }
-    }, 3000);
-
-    // Subscribe to presence changes
-    const presenceChannel = supabase.channel(`presence:${lobbyId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'game_presence',
-          filter: `lobby_id=eq.${lobbyId}`
-        },
-        async (payload: RealtimePostgresChangesPayload<PlayerPresence>) => {
-          // Handle presence change
-          const newPresence = payload.new;
-          if (newPresence && isPlayerPresence(newPresence)) {
-            setPlayerPresence(prev => {
-              const updated = [...prev];
-              const index = updated.findIndex(p => p.user_id === newPresence.user_id);
-              if (index !== -1) {
-                updated[index] = newPresence;
-              } else {
-                updated.push(newPresence);
-              }
-              return updated;
-            });
-          }
-        }
-      )
-      .subscribe();
-
-    // Cleanup function
-    return () => {
-      clearInterval(presenceInterval);
-      presenceChannel.unsubscribe();
-      // Set status to offline
-      void supabase.from('game_presence').update({ status: 'offline' })
-        .eq('lobby_id', lobbyId)
-        .eq('user_id', user.id);
-    };
-  }, [user, lobbyId, showToast, router]);
-
-  // Helper function to check if a player is online
-  const isPlayerOnline = (playerId: string) => {
-    const presence = playerPresence.find(p => p.user_id === playerId);
-    return presence?.status === 'online';
-  };
-
-  // Add banned letters when game starts
-  useEffect(() => {
-    if (!isLoadingPlayers && players.length > 0 && isInitialLoad) {
-      setBannedLetters(getInitialBannedLetters())
-    }
-  }, [isLoadingPlayers, players.length, isInitialLoad])
 
   return (
     <PageTransition>
@@ -1055,15 +410,6 @@ export default function GamePage({ params }: GamePageProps) {
         />
 
         <div className="h-screen flex">
-          {/* Loading overlay - Only show on initial load */}
-          {isInitialLoad && (isLoadingPlayers || isLoadingGame) && (
-            <div className="absolute inset-0 backdrop-blur-sm z-50 flex items-center justify-center bg-white/5">
-              <div className="text-white text-xl font-medium bg-white/10 px-6 py-3 rounded-xl backdrop-blur-md border border-white/10">
-                {isLoadingPlayers ? 'Loading players...' : 'Loading game state...'}
-              </div>
-            </div>
-          )}
-
           {/* Sidebar - Fixed */}
           <aside className="w-80 border-r border-white/20 shadow-[1px_0_0_0_rgba(255,255,255,0.1)] p-6 flex flex-col">
             <h2 className="text-2xl font-semibold text-white mb-4">
@@ -1322,13 +668,11 @@ export default function GamePage({ params }: GamePageProps) {
                             // Clear invalid letters when input changes
                             setInvalidLetters([])
                           }}
-                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id || isLoadingGame}
+                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id}
                           placeholder={
-                            isLoadingGame 
-                              ? "Loading game..." 
-                              : user?.id === players[currentTurn]?.id 
+                            user?.id === players[currentTurn]?.id 
                             ? "Type your word..." 
-                                : "Waiting for opponent..."
+                            : "Waiting for opponent..."
                           }
                           className={cn(`
                             flex-1 px-6 py-4 rounded-xl border bg-white/5 text-white 
@@ -1343,7 +687,7 @@ export default function GamePage({ params }: GamePageProps) {
                         />
                         <button
                           type="submit"
-                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id || isLoadingGame}
+                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id}
                           className="p-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl shadow-lg transition-all duration-200 
                           hover:shadow-xl hover:scale-105 hover:from-purple-600 hover:to-pink-600 
                           active:scale-95 active:shadow-md active:translate-y-0.5
@@ -1369,11 +713,8 @@ export default function GamePage({ params }: GamePageProps) {
                           <div className="flex flex-col items-center text-center">
                             <span>{players[0]?.name || 'Unknown Player'}</span>
                             <span className="text-white/60 text-sm">
-                              {isLoadingPlayers ? '...' : (players[0]?.elo || '1000')}
+                              {players[0]?.elo || '1000'}
                             </span>
-                            {players[0] && !isPlayerOnline(players[0].id) && (
-                              <span className="text-white/40 text-sm">Offline</span>
-                            )}
                           </div>
                         }
                       >
@@ -1387,7 +728,7 @@ export default function GamePage({ params }: GamePageProps) {
                               currentTurn === 0
                                 ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
                                 : 'ring-white/20',
-                              players[0] && !isPlayerOnline(players[0].id) && 'opacity-50'
+                              players[0] && !players[0].isOnline && 'opacity-50'
                             )}
                           />
                           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
@@ -1396,7 +737,7 @@ export default function GamePage({ params }: GamePageProps) {
                               isActive={gameStarted && currentTurn === 0} 
                             />
                           </div>
-                          {players[0] && !isPlayerOnline(players[0].id) && (
+                          {players[0] && !players[0].isOnline && (
                             <div className="absolute -bottom-1 -right-1 bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/20 z-10">
                               <div className="w-3 h-3 rounded-full bg-red-500/50 animate-pulse" />
                             </div>
@@ -1417,11 +758,8 @@ export default function GamePage({ params }: GamePageProps) {
                           <div className="flex flex-col items-center text-center">
                             <span>{players[1]?.name || 'Unknown Player'}</span>
                             <span className="text-white/60 text-sm">
-                              {isLoadingPlayers ? '...' : (players[1]?.elo || '1000')}
+                              {players[1]?.elo || '1000'}
                             </span>
-                            {players[1] && !isPlayerOnline(players[1].id) && (
-                              <span className="text-white/40 text-sm">Offline</span>
-                            )}
                           </div>
                         }
                       >
@@ -1435,7 +773,7 @@ export default function GamePage({ params }: GamePageProps) {
                               currentTurn === 1
                                 ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
                                 : 'ring-white/20',
-                              players[1] && !isPlayerOnline(players[1].id) && 'opacity-50'
+                              players[1] && !players[1].isOnline && 'opacity-50'
                             )}
                           />
                           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
@@ -1444,7 +782,7 @@ export default function GamePage({ params }: GamePageProps) {
                               isActive={gameStarted && currentTurn === 1} 
                             />
                           </div>
-                          {players[1] && !isPlayerOnline(players[1].id) && (
+                          {players[1] && !players[1].isOnline && (
                             <div className="absolute -bottom-1 -right-1 bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/20 z-10">
                               <div className="w-3 h-3 rounded-full bg-red-500/50 animate-pulse" />
                             </div>
