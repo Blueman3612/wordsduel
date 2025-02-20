@@ -195,7 +195,7 @@ export default function GamePage({ params }: GamePageProps) {
     };
 
     fetchGameStateAndWords();
-  }, [lobbyId]);
+  }, [lobbyId, players]);
 
   // Fetch initial player data
   useEffect(() => {
