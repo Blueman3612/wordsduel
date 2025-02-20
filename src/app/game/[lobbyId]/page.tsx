@@ -486,14 +486,13 @@ export default function GamePage({ params }: GamePageProps) {
 
     try {
       // Check if word has been used before
-      const { data: existingWord } = await supabase
+      const { data: existingWords } = await supabase
         .from('game_words')
         .select('id')
         .eq('lobby_id', lobbyId)
-        .eq('word', trimmedWord)
-        .single();
+        .eq('word', trimmedWord);
 
-      if (existingWord) {
+      if (existingWords && existingWords.length > 0) {
         showToast('This word has already been used!', 'error')
         return
       }
@@ -505,38 +504,27 @@ export default function GamePage({ params }: GamePageProps) {
       }
 
       // Validate word in dictionary
-      const { data: dictWord } = await supabase
+      const { data: dictWords, error: dictError } = await supabase
         .from('words')
         .select('part_of_speech, definitions')
-        .eq('word', trimmedWord)
-        .single() as { data: DictionaryWord | null };
+        .eq('word', trimmedWord) as { 
+          data: Array<{ part_of_speech: string; definitions: string[] }> | null; 
+          error: any; 
+        };
 
-      if (!dictWord) {
-        showToast('Word not found in dictionary!', 'error')
-        return
+      if (dictError) {
+        console.error('Error checking dictionary:', dictError);
+        showToast('Error validating word', 'error');
+        return;
       }
 
-      // Check if it's a valid part of speech
-      const validTypes = ['noun', 'verb', 'adjective', 'adverb']
-      if (!validTypes.includes(dictWord.part_of_speech)) {
-        showToast(`Invalid part of speech: ${dictWord.part_of_speech}`, 'error')
-        return
+      if (!dictWords || dictWords.length === 0) {
+        showToast('Word not found in dictionary!', 'error');
+        return;
       }
 
-      // Check for proper nouns
-      const properNounIndicators = [
-        'brand', 'trademark', 'name', 'company', 'place',
-        'country', 'city', 'person', 'language'
-      ]
-      const isProperNoun = dictWord.definitions.some(def => 
-        properNounIndicators.some(indicator => 
-          def.toLowerCase().includes(indicator)
-        )
-      )
-      if (isProperNoun) {
-        showToast('Proper nouns are not allowed!', 'error')
-        return
-      }
+      // Use the first dictionary entry for the word record
+      const validEntry = dictWords[0];
 
       // Calculate word score and breakdown
       const previousWord = words.length > 0 ? words[words.length - 1].word : null
@@ -569,33 +557,44 @@ export default function GamePage({ params }: GamePageProps) {
       const totalScore = lengthScore + levenBonus + rarityScore
 
       // Insert the word first
-      const { data: gameWord, error: wordError } = await supabase
+      const { data: gameWords, error: wordError } = await supabase
         .from('game_words')
         .insert({
           lobby_id: lobbyId,
           word: trimmedWord,
           player_id: user.id,
-          is_valid: true, // We'll update this if validation fails
+          is_valid: true,
           score: totalScore,
           score_breakdown: {
             lengthScore,
             levenBonus,
             rarityBonus: rarityScore
-          }
+          },
+          part_of_speech: validEntry.part_of_speech,
+          definition: validEntry.definitions[0]
         })
-        .select()
-        .single()
+        .select();
 
-      if (wordError) throw wordError
+      if (wordError || !gameWords || gameWords.length === 0) {
+        console.error('Error inserting word:', wordError);
+        showToast('Failed to submit word', 'error');
+        return;
+      }
 
       // Get the lobby config for time increment
-      const { data: lobbyData } = await supabase
+      const { data: lobbyData, error: lobbyError } = await supabase
         .from('lobbies')
         .select('game_config')
         .eq('id', lobbyId)
-        .single()
+        .maybeSingle();
 
-      const timeIncrement = lobbyData?.game_config.increment || 5000
+      if (lobbyError) {
+        console.error('Error fetching lobby config:', lobbyError);
+        showToast('Error updating game state', 'error');
+        return;
+      }
+
+      const timeIncrement = lobbyData?.game_config.increment || 5000;
 
       // Update game state
       const { error: stateError } = await supabase
@@ -609,9 +608,13 @@ export default function GamePage({ params }: GamePageProps) {
           updated_at: new Date().toISOString(),
           updated_by: user.id
         })
-        .eq('lobby_id', lobbyId)
+        .eq('lobby_id', lobbyId);
 
-      if (stateError) throw stateError
+      if (stateError) {
+        console.error('Error updating game state:', stateError);
+        showToast('Error updating game state', 'error');
+        return;
+      }
 
     } catch (error) {
       console.error('Error submitting word:', error)
