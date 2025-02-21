@@ -259,7 +259,7 @@ export default function GamePage({ params }: GamePageProps) {
         console.log('Player profiles:', profilesData)
 
         // Transform profiles into Player objects - note removal of isOnline
-        const playerProfiles = profilesData?.map((profile, index) => ({
+        const playerProfiles = profilesData?.map((profile) => ({
           id: profile.id,
           name: profile.display_name,
           elo: profile.elo,

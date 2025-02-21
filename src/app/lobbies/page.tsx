@@ -590,7 +590,7 @@ export default function LobbiesPage() {
                     <Input
                       type="text"
                       value={baseTimeInput}
-                      onFocus={(e: React.FocusEvent<HTMLInputElement>) => {
+                      onFocus={() => {
                         // Store the current formatted time when focusing
                         setBaseTimeInput(formatTime(baseTime))
                       }}
