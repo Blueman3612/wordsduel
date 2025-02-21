@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Send, X, Flag } from 'lucide-react'
 import { ActionModal } from '@/components/game/ActionModal'
 import { PageTransition } from '@/components/layout/PageTransition'
@@ -109,7 +109,7 @@ export default function GamePage({ params }: GamePageProps) {
   const consonants = alphabet.filter(letter => !vowels.includes(letter))
 
   // Helper function to get initial banned letters
-  const getInitialBannedLetters = () => {
+  const getInitialBannedLetters = useCallback(() => {
     // Randomly select 3 consonants
     const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5)
     const bannedConsonants = shuffledConsonants.slice(0, 3)
@@ -119,7 +119,7 @@ export default function GamePage({ params }: GamePageProps) {
     const bannedVowel = shuffledVowels[0]
     
     return [...bannedConsonants, bannedVowel]
-  }
+  }, [consonants, vowels]);
   
   // Basic state
   const [word, setWord] = useState('')
@@ -419,7 +419,7 @@ export default function GamePage({ params }: GamePageProps) {
           
           Object.entries(state).forEach(([key, presences]) => {
             console.log('Processing presence key:', key, 'presences:', presences);
-            (presences as { user_id: string; presence_ref?: string }[]).forEach(presence => {
+            (presences as PresenceState[]).forEach(presence => {
               if (presence.user_id) {
                 console.log('Adding online user:', presence.user_id);
                 onlineIds.add(presence.user_id);
@@ -633,7 +633,7 @@ export default function GamePage({ params }: GamePageProps) {
         .select('part_of_speech, definitions')
         .eq('word', trimmedWord) as { 
           data: Array<{ part_of_speech: string; definitions: string[] }> | null; 
-          error: any; 
+          error: Error | null; 
         };
 
       if (dictError) {
