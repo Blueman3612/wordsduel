@@ -758,7 +758,6 @@ export default function GamePage({ params }: GamePageProps) {
     } | null = null;
 
     const checkHostAndSync = async () => {
-      // Only check host status once
       if (!isHostChecked) {
         const { data: lobbyData } = await supabase
           .from('lobbies')
@@ -771,25 +770,18 @@ export default function GamePage({ params }: GamePageProps) {
 
         if (!isHost) return false;
 
-        // Do one-time sync when host starts timer
+        // On host refresh, just get the current state without recalculating time
         const { data: gameState } = await supabase
           .from('game_state')
           .select('last_move_at, current_turn, player1_time, player2_time')
           .eq('lobby_id', lobbyId)
           .single();
 
-        if (gameState?.last_move_at) {
-          const timeSinceLastMove = Date.now() - new Date(gameState.last_move_at).getTime();
-          const timeToSubtract = Math.floor(timeSinceLastMove / 1000) * 1000;
-          
-          const currentTime = gameState.current_turn === 0 ? gameState.player1_time : gameState.player2_time;
-          const newTime = Math.max(0, currentTime - timeToSubtract);
-          
-          // Store the last known state
+        if (gameState) {
           lastKnownState = {
             currentTurn: gameState.current_turn,
-            player1Time: gameState.current_turn === 0 ? newTime : gameState.player1_time,
-            player2Time: gameState.current_turn === 1 ? newTime : gameState.player2_time,
+            player1Time: gameState.player1_time,
+            player2Time: gameState.player2_time,
             lastMoveAt: gameState.last_move_at
           };
         }
