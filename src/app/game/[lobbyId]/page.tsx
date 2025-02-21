@@ -421,83 +421,83 @@ export default function GamePage({ params }: GamePageProps) {
 
       // Add other channel listeners
       channel
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'game_state',
-            filter: `lobby_id=eq.${lobbyId}`
-          },
-          (payload: GameStatePayload) => {
-            const newState = payload.new as GameState
-            if (!newState) return
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'game_state',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        (payload: GameStatePayload) => {
+          const newState = payload.new as GameState
+          if (!newState) return
+          
+          // Update game state
+          setCurrentTurn(newState.current_turn)
+          setPlayer1Time(newState.player1_time)
+          setPlayer2Time(newState.player2_time)
+          setBannedLetters(newState.banned_letters || [])
+          
+          // Update player scores
+          setPlayers(prev => {
+            const updated = [...prev]
+            if (updated[0]) updated[0].score = newState.player1_score
+            if (updated[1]) updated[1].score = newState.player2_score
+            return updated
+          })
+
+          // Handle game end
+          if (newState.status === 'finished' && !showGameOverModal) {
+            const winner = newState.player1_time <= 0 ? players[1] : players[0]
+            const loser = newState.player1_time <= 0 ? players[0] : players[1]
             
-            // Update game state
-            setCurrentTurn(newState.current_turn)
-            setPlayer1Time(newState.player1_time)
-            setPlayer2Time(newState.player2_time)
-            setBannedLetters(newState.banned_letters || [])
-            
-            // Update player scores
-            setPlayers(prev => {
-              const updated = [...prev]
-              if (updated[0]) updated[0].score = newState.player1_score
-              if (updated[1]) updated[1].score = newState.player2_score
-              return updated
+            setGameOverInfo({
+              winner,
+              loser,
+              reason: 'time'
             })
-
-            // Handle game end
-            if (newState.status === 'finished' && !showGameOverModal) {
-              const winner = newState.player1_time <= 0 ? players[1] : players[0]
-              const loser = newState.player1_time <= 0 ? players[0] : players[1]
-              
-              setGameOverInfo({
-                winner,
-                loser,
-                reason: 'time'
-              })
-              setShowGameOverModal(true)
-            }
+            setShowGameOverModal(true)
           }
-        )
-        .on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'game_words',
-            filter: `lobby_id=eq.${lobbyId}`
-          },
-          (payload: GameWordPayload) => {
-            const newWord = payload.new as GameWord
-            if (!newWord) return
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'game_words',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        (payload: GameWordPayload) => {
+          const newWord = payload.new as GameWord
+          if (!newWord) return
 
-            // Add word to the list
-            setWords(prev => {
-              if (prev.some(w => w.word === newWord.word)) return prev
+          // Add word to the list
+          setWords(prev => {
+            if (prev.some(w => w.word === newWord.word)) return prev
 
-              const wordCard: WordCard = {
-                word: newWord.word,
-                player: players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
-                timestamp: Date.now(),
-                isInvalid: !newWord.is_valid,
-                score: newWord.score,
-                scoreBreakdown: newWord.score_breakdown,
-                dictionary: {
-                  partOfSpeech: newWord.part_of_speech,
-                  definition: newWord.definition,
-                  phonetics: newWord.phonetics
-                }
+            const wordCard: WordCard = {
+              word: newWord.word,
+              player: players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+              timestamp: Date.now(),
+              isInvalid: !newWord.is_valid,
+              score: newWord.score,
+              scoreBreakdown: newWord.score_breakdown,
+              dictionary: {
+                partOfSpeech: newWord.part_of_speech,
+                definition: newWord.definition,
+                phonetics: newWord.phonetics
               }
+            }
 
-              return [...prev, wordCard]
-            })
+            return [...prev, wordCard]
+          })
 
-            // Update game started state
-            setGameStarted(true)
-          }
-        )
+          // Update game started state
+          setGameStarted(true)
+        }
+      )
         .subscribe(async (status) => {  // Add the subscribe call here
           console.log('Channel subscription status:', status);
           if (status === 'SUBSCRIBED') {
@@ -692,6 +692,51 @@ export default function GamePage({ params }: GamePageProps) {
       showToast('Failed to submit word', 'error')
     }
   }
+
+  // Timer effect - host updates game state every second
+  useEffect(() => {
+    if (!lobbyId || !user || !gameStarted) return;
+
+    let interval: NodeJS.Timeout;
+
+    const runTimer = async () => {
+      const { data: lobbyData } = await supabase
+        .from('lobbies')
+        .select('host_id')
+        .eq('id', lobbyId)
+        .single();
+      
+      const isHost = lobbyData?.host_id === user.id;
+      if (!isHost) return; // Only host updates time
+
+      interval = setInterval(async () => {
+        const currentPlayerTime = currentTurn === 0 ? player1Time : player2Time;
+        if (currentPlayerTime <= 0) return; // Game should be over
+
+        const newTime = Math.max(0, currentPlayerTime - 1000);
+        
+        const { error: stateError } = await supabase
+          .from('game_state')
+          .update({
+            [currentTurn === 0 ? 'player1_time' : 'player2_time']: newTime,
+            status: newTime <= 0 ? 'finished' : 'active',
+            updated_at: new Date().toISOString(),
+            updated_by: user.id
+          })
+          .eq('lobby_id', lobbyId);
+
+        if (stateError) {
+          console.error('Error updating game time:', stateError);
+        }
+      }, 1000);
+    };
+
+    runTimer();
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [lobbyId, user, currentTurn, player1Time, player2Time, gameStarted]);
 
   return (
     <PageTransition>
