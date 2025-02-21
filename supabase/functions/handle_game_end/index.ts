@@ -2,12 +2,15 @@
 // https://deno.land/manual/getting_started/setup_your_environment
 // This enables autocomplete, go to definition, etc.
 
-// Setup type definitions for built-in Supabase Runtime APIs
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1"
-import { corsHeaders } from "https://raw.githubusercontent.com/supabase/supabase/master/examples/edge-functions/supabase/functions/_shared/cors.ts"
 
-console.log("Hello from Functions!")
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': '*',
+  'Access-Control-Max-Age': '86400',
+  'Access-Control-Allow-Credentials': 'true'
+};
 
 interface RequestBody {
   lobby_id: string
@@ -15,7 +18,7 @@ interface RequestBody {
   reason: 'time' | 'forfeit'
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   // Always include CORS headers
   const headers = {
     ...corsHeaders,
