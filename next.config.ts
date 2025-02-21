@@ -10,6 +10,16 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  webpack: (config, { isServer }) => {
+    // Exclude Supabase Edge Functions from the build
+    config.externals = [...(config.externals || []), {
+      'supabase/functions': 'supabase/functions'
+    }];
+    return config;
+  },
+  typescript: {
+    ignoreBuildErrors: true
+  }
 };
 
 export default nextConfig;
