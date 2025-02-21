@@ -63,6 +63,7 @@ interface GameState {
   player2_score: number
   status: 'active' | 'paused' | 'finished'
   banned_letters: string[]
+  elo_updated: boolean
 }
 
 interface GameWord {
@@ -125,6 +126,14 @@ export default function GamePage({ params }: GamePageProps) {
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
   const [bannedLetters, setBannedLetters] = useState<string[]>([])
   const [onlinePlayers, setOnlinePlayers] = useState<Set<string>>(new Set())
+
+  // Add this near the top with other state declarations
+  const currentPlayersRef = useRef<Player[]>([]);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    currentPlayersRef.current = players;
+  }, [players]);
 
   // Fetch initial game state and words
   useEffect(() => {
@@ -745,7 +754,7 @@ export default function GamePage({ params }: GamePageProps) {
 
   // Timer effect - host updates game state every second
   useEffect(() => {
-    if (!lobbyId || !user || !gameStarted || !words.length) return; // Don't start until first word
+    if (!lobbyId || !user || !gameStarted || !words.length) return;
 
     let interval: NodeJS.Timeout;
     let isHostChecked = false;
@@ -770,7 +779,6 @@ export default function GamePage({ params }: GamePageProps) {
 
         if (!isHost) return false;
 
-        // On host refresh, just get the current state without recalculating time
         const { data: gameState } = await supabase
           .from('game_state')
           .select('last_move_at, current_turn, player1_time, player2_time')
@@ -793,18 +801,18 @@ export default function GamePage({ params }: GamePageProps) {
       const shouldContinue = await checkHostAndSync();
       if (!shouldContinue) return;
 
-      // Start the interval only if we're the host
       interval = setInterval(async () => {
-        // Get the latest state if we don't have it or if it's stale
         const { data: currentState } = await supabase
           .from('game_state')
-          .select('current_turn, player1_time, player2_time, last_move_at')
+          .select('current_turn, player1_time, player2_time, last_move_at, status')
           .eq('lobby_id', lobbyId)
           .single();
           
-        if (!currentState) return;
+        if (!currentState || currentState.status === 'finished') {
+          if (interval) clearInterval(interval);
+          return;
+        }
 
-        // If we don't have a last known state, initialize it
         if (!lastKnownState) {
           lastKnownState = {
             currentTurn: currentState.current_turn,
@@ -812,36 +820,80 @@ export default function GamePage({ params }: GamePageProps) {
             player2Time: currentState.player2_time,
             lastMoveAt: currentState.last_move_at
           };
-          return; // Skip this tick to initialize state
+          return;
         }
 
-        // Check if there's been a new move (turn change)
         const isNewMove = new Date(currentState.last_move_at).getTime() > new Date(lastKnownState.lastMoveAt).getTime();
 
         if (isNewMove) {
-          // Update our local state to match the new game state
           lastKnownState = {
             currentTurn: currentState.current_turn,
             player1Time: currentState.player1_time,
             player2Time: currentState.player2_time,
             lastMoveAt: currentState.last_move_at
           };
-          return; // Skip this tick to avoid race conditions
+          return;
         }
 
-        // Safe to use lastKnownState now as we've checked it's not null
         const currentPlayerTime = lastKnownState.currentTurn === 0 
           ? lastKnownState.player1Time 
           : lastKnownState.player2Time;
 
         if (currentPlayerTime <= 0) {
+          console.log('[Game End] Timer reached zero', {
+            isHost,
+            currentTurn: lastKnownState.currentTurn,
+            player1Time: lastKnownState.player1Time,
+            player2Time: lastKnownState.player2Time
+          });
+
           if (interval) clearInterval(interval);
+
+          // Only host calls the handle_game_end function
+          if (isHost) {
+            console.log('[Game End] Host is calling handle_game_end');
+            try {
+              const { data: { session } } = await supabase.auth.getSession();
+              console.log('[Game End] Got session token:', !!session?.access_token);
+              
+              console.log('[Game End] Making Edge Function call with payload:', {
+                lobby_id: lobbyId,
+                game_status: 'finished',
+                reason: 'time'
+              });
+              
+              const response = await supabase.functions.invoke('handle_game_end', {
+                body: {
+                  lobby_id: lobbyId,
+                  game_status: 'finished',
+                  reason: 'time'
+                },
+                headers: {
+                  Authorization: `Bearer ${session?.access_token}`
+                }
+              });
+
+              console.log('[Game End] Edge Function response:', {
+                error: response.error,
+                data: response.data,
+                status: response.status
+              });
+
+              if (response.error) {
+                console.error('[Game End] Error calling handle_game_end:', response.error);
+              }
+            } catch (error) {
+              console.error('[Game End] Exception in handle_game_end call:', error);
+            }
+          } else {
+            console.log('[Game End] Non-host client waiting for game state update');
+          }
+          
           return;
         }
 
         const newTime = Math.max(0, currentPlayerTime - 1000);
         
-        // Update our stored state first
         lastKnownState = {
           currentTurn: lastKnownState.currentTurn,
           lastMoveAt: lastKnownState.lastMoveAt,
@@ -849,12 +901,10 @@ export default function GamePage({ params }: GamePageProps) {
           player2Time: lastKnownState.currentTurn === 1 ? newTime : lastKnownState.player2Time
         };
 
-        // Then update the server
         const { error: stateError } = await supabase
           .from('game_state')
           .update({
             [lastKnownState.currentTurn === 0 ? 'player1_time' : 'player2_time']: newTime,
-            status: newTime <= 0 ? 'finished' : 'active',
             updated_at: new Date().toISOString(),
             updated_by: user.id
           })
@@ -871,7 +921,102 @@ export default function GamePage({ params }: GamePageProps) {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [lobbyId, user?.id, gameStarted, words.length]); // Added words.length dependency
+  }, [lobbyId, user?.id, gameStarted, words.length]);
+
+  // Game state subscription effect
+  useEffect(() => {
+    if (!lobbyId || !user) return;
+
+    let isSubscribed = true;
+    console.log('[Game State Sub] Setting up game state subscription');
+
+    // Function to fetch and update profiles
+    const fetchAndUpdateProfiles = async () => {
+      if (!isSubscribed) return;
+      
+      // Fetch updated profiles for both players
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('*')
+        .in('id', currentPlayersRef.current.map(p => p.id));
+      
+      if (!isSubscribed || !profiles) return;
+      console.log('[Game State Sub] Fetched updated profiles:', profiles);
+          
+      // Update players with new ELO values
+      const updatedPlayers = currentPlayersRef.current.map(p => {
+        const profile = profiles.find(prof => prof.id === p.id);
+        if (profile) {
+          return {
+            ...p,
+            elo: profile.elo,
+            originalElo: p.elo // Store original ELO for display
+          };
+        }
+        return p;
+      });
+      
+      if (!isSubscribed) return;
+      console.log('[Game State Sub] Setting updated players:', updatedPlayers);
+      
+      setPlayers(updatedPlayers);
+      return updatedPlayers;
+    };
+
+    const channel = supabase
+      .channel(`game_state_${lobbyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'game_state',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        async (payload) => {
+          if (!isSubscribed) return;
+
+          const newState = payload.new as GameState;
+          console.log('[Game State Sub] Received state update:', {
+            status: newState.status,
+            elo_updated: newState.elo_updated,
+            showingModal: showGameOverModal
+          });
+          
+          // If game is finished and ELO is updated, show game over modal
+          if (newState.status === 'finished' && newState.elo_updated && !showGameOverModal) {
+            console.log('[Game State Sub] Game finished, fetching final state');
+            
+            const updatedPlayers = await fetchAndUpdateProfiles();
+            if (!updatedPlayers || !isSubscribed) return;
+            
+            // Determine winner/loser based on time
+            const winner = newState.player1_time <= 0 ? updatedPlayers[1] : updatedPlayers[0];
+            const loser = newState.player1_time <= 0 ? updatedPlayers[0] : updatedPlayers[1];
+            
+            console.log('[Game State Sub] Setting game over info', {
+              winner: { id: winner.id, name: winner.name, elo: winner.elo, originalElo: winner.originalElo },
+              loser: { id: loser.id, name: loser.name, elo: loser.elo, originalElo: loser.originalElo }
+            });
+            
+            if (!isSubscribed) return;
+            setGameOverInfo({
+              winner,
+              loser,
+              reason: 'time'
+            });
+            setShowGameOverModal(true);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      console.log('[Game State Sub] Cleaning up subscription');
+      isSubscribed = false;
+      channel.unsubscribe();
+    };
+  }, [lobbyId, user, showGameOverModal]); // Removed players dependency
 
   return (
     <PageTransition>
