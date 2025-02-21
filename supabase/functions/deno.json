@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "strict": true,
+    "lib": ["deno.window"]
+  },
+  "unstable": ["bare-node-builtins", "byonm"],
+  "importMap": "./import_map.json"
+} 
