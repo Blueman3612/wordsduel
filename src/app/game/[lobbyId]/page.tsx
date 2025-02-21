@@ -40,10 +40,11 @@ interface WordCard {
 interface Player {
   id: string
   name: string
-  elo: number
+  avatar_url: string
   score: number
-  avatar_url?: string | null
+  elo: number
   originalElo?: number
+  games_played: number
 }
 
 // Scoring weights - can be adjusted to taste
@@ -134,6 +135,22 @@ export default function GamePage({ params }: GamePageProps) {
   useEffect(() => {
     currentPlayersRef.current = players;
   }, [players]);
+
+  // Add this near other refs at the top
+  const gameEndStateRef = useRef<{
+    players: Player[];
+    gameOverInfo: {
+      winner: Player | null;
+      loser: Player | null;
+      reason: 'time' | 'forfeit';
+    } | null;
+  }>({
+    players: [],
+    gameOverInfo: null
+  });
+
+  // Add this state near other state declarations
+  const [isLoadingGameOver, setIsLoadingGameOver] = useState(false);
 
   // Fetch initial game state and words
   useEffect(() => {
@@ -261,7 +278,8 @@ export default function GamePage({ params }: GamePageProps) {
           elo: profile.elo,
           score: 0,
           avatar_url: profile.avatar_url,
-          originalElo: profile.elo
+          originalElo: profile.elo,
+          games_played: 0
         })) || []
 
         setPlayers(playerProfiles)
@@ -499,18 +517,8 @@ export default function GamePage({ params }: GamePageProps) {
             return updated
           })
 
-          // Handle game end
-          if (newState.status === 'finished' && !showGameOverModal) {
-            const winner = newState.player1_time <= 0 ? players[1] : players[0]
-            const loser = newState.player1_time <= 0 ? players[0] : players[1]
-            
-            setGameOverInfo({
-              winner,
-              loser,
-              reason: 'time'
-            })
-            setShowGameOverModal(true)
-          }
+          // Remove the immediate game over handling from here
+          // The other subscription will handle it
         }
       )
       .on(
@@ -876,7 +884,7 @@ export default function GamePage({ params }: GamePageProps) {
               console.log('[Game End] Edge Function response:', {
                 error: response.error,
                 data: response.data,
-                status: response.status
+                status: response.error ? 'error' : 'success'
               });
 
               if (response.error) {
@@ -931,36 +939,93 @@ export default function GamePage({ params }: GamePageProps) {
     console.log('[Game State Sub] Setting up game state subscription');
 
     // Function to fetch and update profiles
-    const fetchAndUpdateProfiles = async () => {
-      if (!isSubscribed) return;
+    const fetchAndUpdateProfiles = async (): Promise<Player[] | null> => {
+      console.log('[Profile Update] Starting profile fetch');
       
-      // Fetch updated profiles for both players
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('*')
-        .in('id', currentPlayersRef.current.map(p => p.id));
-      
-      if (!isSubscribed || !profiles) return;
-      console.log('[Game State Sub] Fetched updated profiles:', profiles);
-          
-      // Update players with new ELO values
-      const updatedPlayers = currentPlayersRef.current.map(p => {
-        const profile = profiles.find(prof => prof.id === p.id);
-        if (profile) {
-          return {
-            ...p,
-            elo: profile.elo,
-            originalElo: p.elo // Store original ELO for display
-          };
+      if (!lobbyId) {
+        console.log('[Profile Update] No lobby ID available');
+        return null;
+      }
+
+      try {
+        // First get lobby members - same as in fetchPlayers
+        const { data: membersData, error: membersError } = await supabase
+          .from('lobby_members')
+          .select('user_id, joined_at')
+          .eq('lobby_id', lobbyId)
+          .order('joined_at', { ascending: true });
+
+        if (membersError) {
+          console.error('[Profile Update] Error fetching lobby members:', membersError);
+          return null;
         }
-        return p;
-      });
-      
-      if (!isSubscribed) return;
-      console.log('[Game State Sub] Setting updated players:', updatedPlayers);
-      
-      setPlayers(updatedPlayers);
-      return updatedPlayers;
+
+        console.log('[Profile Update] Lobby members:', membersData);
+
+        if (!membersData?.length) {
+          console.log('[Profile Update] No members found in lobby');
+          return null;
+        }
+
+        // Get profiles for all members
+        const { data: profiles, error: profileError } = await supabase
+          .from('profiles')
+          .select('id, display_name, avatar_url, elo, games_played')
+          .in('id', membersData.map(m => m.user_id));
+
+        if (profileError) {
+          console.error('[Profile Update] Error fetching profiles:', profileError);
+          return null;
+        }
+
+        if (!profiles || profiles.length === 0) {
+          console.log('[Profile Update] No profiles found');
+          return null;
+        }
+
+        console.log('[Profile Update] Fetched profiles:', profiles);
+
+        // Map the profiles to players, preserving the original order from membersData
+        const updatedPlayers = membersData.map(member => {
+          const profile = profiles.find(p => p.id === member.user_id);
+          const currentPlayer = currentPlayersRef.current.find(p => p.id === member.user_id);
+          
+          if (!profile) {
+            console.log(`[Profile Update] No profile found for member ${member.user_id}`);
+            return currentPlayer || null;
+          }
+
+          console.log(`[Profile Update] Updating player ${profile.id}:`, {
+            name: profile.display_name,
+            originalElo: currentPlayer?.originalElo || currentPlayer?.elo || profile.elo,
+            newElo: profile.elo,
+            diff: profile.elo - (currentPlayer?.originalElo || currentPlayer?.elo || profile.elo)
+          });
+
+          return {
+            id: profile.id,
+            name: profile.display_name,
+            avatar_url: profile.avatar_url,
+            elo: profile.elo,
+            originalElo: currentPlayer?.originalElo || currentPlayer?.elo || profile.elo,
+            games_played: profile.games_played,
+            score: currentPlayer?.score || 0
+          };
+        }).filter(Boolean) as Player[];
+
+        console.log('[Profile Update] Final updated players:', updatedPlayers.map(p => ({
+          id: p.id,
+          name: p.name,
+          elo: p.elo,
+          originalElo: p.originalElo,
+          diff: p.elo - (p.originalElo || 0)
+        })));
+
+        return updatedPlayers;
+      } catch (error) {
+        console.error('[Profile Update] Error in fetchAndUpdateProfiles:', error);
+        return null;
+      }
     };
 
     const channel = supabase
@@ -980,32 +1045,112 @@ export default function GamePage({ params }: GamePageProps) {
           console.log('[Game State Sub] Received state update:', {
             status: newState.status,
             elo_updated: newState.elo_updated,
-            showingModal: showGameOverModal
+            showingModal: showGameOverModal,
+            currentPlayers: currentPlayersRef.current.map(p => ({
+              id: p.id,
+              name: p.name,
+              elo: p.elo,
+              originalElo: p.originalElo
+            }))
           });
           
-          // If game is finished and ELO is updated, show game over modal
-          if (newState.status === 'finished' && newState.elo_updated && !showGameOverModal) {
-            console.log('[Game State Sub] Game finished, fetching final state');
+          // Handle game over state for both host and non-host
+          if (newState.status === 'finished' && !showGameOverModal) {
+            console.log('[Game End] Game finished, checking profiles');
+            setIsLoadingGameOver(true);
             
-            const updatedPlayers = await fetchAndUpdateProfiles();
-            if (!updatedPlayers || !isSubscribed) return;
+            // Function to attempt profile fetch with retry
+            const attemptProfileFetch = async (retryCount = 0): Promise<Player[] | null> => {
+              const updatedPlayers = await fetchAndUpdateProfiles();
+              
+              // Log the results of each attempt
+              console.log(`[Game End] Profile fetch attempt ${retryCount + 1}:`, 
+                updatedPlayers ? {
+                  players: updatedPlayers.map(p => ({
+                    id: p.id,
+                    name: p.name,
+                    elo: p.elo,
+                    originalElo: p.originalElo
+                  }))
+                } : 'failed'
+              );
+              
+              if (updatedPlayers || retryCount >= 3) return updatedPlayers;
+              
+              console.log(`[Game End] Attempt ${retryCount + 1} failed, retrying in 1 second...`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              return attemptProfileFetch(retryCount + 1);
+            };
+
+            // Start fetching profiles
+            let updatedPlayers = await attemptProfileFetch();
             
-            // Determine winner/loser based on time
+            if (!updatedPlayers) {
+              console.log('[Game End] All retries failed, cannot show game over modal');
+              setIsLoadingGameOver(false);
+              return;
+            }
+
+            if (!isSubscribed) {
+              console.log('[Game End] Subscription cancelled');
+              setIsLoadingGameOver(false);
+              return;
+            }
+
+            // Determine winner and loser based on game state's time values
             const winner = newState.player1_time <= 0 ? updatedPlayers[1] : updatedPlayers[0];
             const loser = newState.player1_time <= 0 ? updatedPlayers[0] : updatedPlayers[1];
             
-            console.log('[Game State Sub] Setting game over info', {
-              winner: { id: winner.id, name: winner.name, elo: winner.elo, originalElo: winner.originalElo },
-              loser: { id: loser.id, name: loser.name, elo: loser.elo, originalElo: loser.originalElo }
+            console.log('[Game End] Setting final game state:', {
+              winner: {
+                name: winner.name,
+                elo: winner.elo,
+                originalElo: winner.originalElo,
+                diff: winner.elo - (winner.originalElo || 0)
+              },
+              loser: {
+                name: loser.name,
+                elo: loser.elo,
+                originalElo: loser.originalElo,
+                diff: loser.elo - (loser.originalElo || 0)
+              }
             });
-            
-            if (!isSubscribed) return;
-            setGameOverInfo({
-              winner,
-              loser,
-              reason: 'time'
-            });
-            setShowGameOverModal(true);
+
+            // Store the state in ref first
+            gameEndStateRef.current = {
+              players: updatedPlayers,
+              gameOverInfo: {
+                winner,
+                loser,
+                reason: 'time'
+              }
+            };
+
+            // Use a timeout to ensure state updates are processed in order
+            setTimeout(() => {
+              if (!isSubscribed) return;
+              
+              // Update all state at once in the next tick
+              setPlayers(gameEndStateRef.current.players);
+              setGameOverInfo(gameEndStateRef.current.gameOverInfo);
+              setShowGameOverModal(true);
+              setIsLoadingGameOver(false);
+              
+              console.log('[Game End] State updates completed:', {
+                players: gameEndStateRef.current.players,
+                gameOverInfo: gameEndStateRef.current.gameOverInfo,
+                winner: {
+                  name: gameEndStateRef.current.gameOverInfo?.winner?.name,
+                  elo: gameEndStateRef.current.gameOverInfo?.winner?.elo,
+                  originalElo: gameEndStateRef.current.gameOverInfo?.winner?.originalElo
+                },
+                loser: {
+                  name: gameEndStateRef.current.gameOverInfo?.loser?.name,
+                  elo: gameEndStateRef.current.gameOverInfo?.loser?.elo,
+                  originalElo: gameEndStateRef.current.gameOverInfo?.loser?.originalElo
+                }
+              });
+            }, 0);
           }
         }
       )
@@ -1041,16 +1186,21 @@ export default function GamePage({ params }: GamePageProps) {
             </Button>
           }
         >
-          {gameOverInfo && (
+          {isLoadingGameOver ? (
+            <div className="flex flex-col items-center justify-center space-y-4 py-8">
+              <div className="w-12 h-12 border-4 border-purple-500/50 border-t-purple-500 rounded-full animate-spin" />
+              <p className="text-white/70">Loading game results...</p>
+            </div>
+          ) : gameOverInfo && gameOverInfo.winner && gameOverInfo.loser ? (
             <div className="space-y-8">
               {/* Victory/Defeat Banner */}
-              {user?.id === gameOverInfo.winner?.id ? (
+              {user?.id === gameOverInfo.winner.id ? (
                 <div className="text-center">
                   <h3 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
                     Victory!
                   </h3>
                 </div>
-              ) : user?.id === gameOverInfo.loser?.id ? (
+              ) : user?.id === gameOverInfo.loser.id ? (
                 <div className="text-center">
                   <h3 className="text-4xl font-bold text-white/80">
                     Defeat
@@ -1073,12 +1223,17 @@ export default function GamePage({ params }: GamePageProps) {
                     <p className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
                       {gameOverInfo.winner?.score || 0}
                     </p>
-                    <p className="text-sm space-x-1">
-                      <span className="text-white/60">{gameOverInfo.winner?.elo}</span>
-                      <span className="text-green-400">
-                        (+{(gameOverInfo.winner?.elo || 0) - (gameOverInfo.winner?.originalElo || 0)})
-                      </span>
-                    </p>
+                    <div className="text-sm space-y-0.5">
+                      <p className="text-white/60">
+                        {gameOverInfo.winner?.originalElo || 0}
+                        <span className="text-green-400 ml-2">
+                          (+{(gameOverInfo.winner?.elo || 0) - (gameOverInfo.winner?.originalElo || 0)})
+                        </span>
+                      </p>
+                      <p className="text-white/90 font-medium">
+                        New ELO: {gameOverInfo.winner?.elo || 0}
+                      </p>
+                    </div>
                   </div>
                 </div>
 
@@ -1095,12 +1250,17 @@ export default function GamePage({ params }: GamePageProps) {
                     <p className="text-2xl font-bold text-white/60">
                       {gameOverInfo.loser?.score || 0}
                     </p>
-                    <p className="text-sm space-x-1">
-                      <span className="text-white/60">{gameOverInfo.loser?.elo}</span>
-                      <span className="text-red-400">
-                        ({(gameOverInfo.loser?.elo || 0) - (gameOverInfo.loser?.originalElo || 0)})
-                      </span>
-                    </p>
+                    <div className="text-sm space-y-0.5">
+                      <p className="text-white/60">
+                        {gameOverInfo.loser?.originalElo || 0}
+                        <span className="text-red-400 ml-2">
+                          ({(gameOverInfo.loser?.elo || 0) - (gameOverInfo.loser?.originalElo || 0)})
+                        </span>
+                      </p>
+                      <p className="text-white/90 font-medium">
+                        New ELO: {gameOverInfo.loser?.elo || 0}
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1109,6 +1269,10 @@ export default function GamePage({ params }: GamePageProps) {
               <div className="text-center text-sm text-white/60">
                 Game ended due to {gameOverInfo.reason === 'time' ? 'time expiration' : 'forfeit'}
               </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-8">
+              <p className="text-white/70">No game results available</p>
             </div>
           )}
         </ActionModal>
