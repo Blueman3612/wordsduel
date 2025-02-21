@@ -69,6 +69,10 @@ Logobout is a real-time multiplayer word game where players take turns typing wo
   - Increment: 5 seconds per move
   - Real-time synchronization
   - Persistent timer state
+  - Timer starts after first word
+  - Host-managed time updates
+  - Race condition prevention
+  - Turn-based state management
 
 ### UI/UX Features
 - Smooth page transitions with directional animations

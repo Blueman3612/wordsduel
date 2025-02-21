@@ -276,6 +276,41 @@ export default function GamePage({ params }: GamePageProps) {
   const vowels = ['A', 'E', 'I', 'O', 'U']
   const consonants = alphabet.filter(letter => !vowels.includes(letter))
 
+  // Helper function to get initial banned letters
+  const getInitialBannedLetters = () => {
+    // Randomly select 3 consonants
+    const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5)
+    const bannedConsonants = shuffledConsonants.slice(0, 3)
+    
+    // Randomly select 1 vowel
+    const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5)
+    const bannedVowel = shuffledVowels[0]
+    
+    return [...bannedConsonants, bannedVowel]
+  }
+
+  // Helper function to get next banned letter
+  const getNextBannedLetter = (currentBannedLetters: string[]) => {
+    // Count currently banned vowels
+    const bannedVowelCount = currentBannedLetters.filter(letter => vowels.includes(letter)).length
+    const availableVowels = vowels.filter(v => !currentBannedLetters.includes(v))
+    
+    // If we have banned 3 vowels, we can only ban consonants
+    if (bannedVowelCount >= 3) {
+      const availableConsonants = consonants.filter(c => !currentBannedLetters.includes(c))
+      return availableConsonants[Math.floor(Math.random() * availableConsonants.length)]
+    }
+    
+    // Otherwise, randomly choose between consonant and vowel
+    const shouldBanVowel = Math.random() < 0.2 && availableVowels.length > 2 // 20% chance to ban a vowel if we can
+    if (shouldBanVowel) {
+      return availableVowels[Math.floor(Math.random() * availableVowels.length)]
+    } else {
+      const availableConsonants = consonants.filter(c => !currentBannedLetters.includes(c))
+      return availableConsonants[Math.floor(Math.random() * availableConsonants.length)]
+    }
+  }
+
   // Function to check for banned letters
   const checkBannedLetters = (word: string): string[] => {
     return bannedLetters.filter(letter => 
@@ -402,7 +437,7 @@ export default function GamePage({ params }: GamePageProps) {
                     player1_score: 0,
                     player2_score: 0,
                     status: 'active',
-                    banned_letters: [],
+                    banned_letters: getInitialBannedLetters(),
                     last_move_at: new Date().toISOString(),
                     updated_at: new Date().toISOString(),
                     updated_by: user.id
@@ -682,7 +717,14 @@ export default function GamePage({ params }: GamePageProps) {
           current_turn: currentTurn === 0 ? 1 : 0,
           [isPlayerOne ? 'player1_score' : 'player2_score']: players[isPlayerOne ? 0 : 1].score + totalScore,
           [isPlayerOne ? 'player1_time' : 'player2_time']: (isPlayerOne ? player1Time : player2Time) + timeIncrement,
-          banned_letters: Array.from(new Set([...bannedLetters, ...trimmedWord.toUpperCase().split('')])),
+          banned_letters: (() => {
+            // If this is the 5th word (index 4) or every 5th word after that
+            if (words.length % 5 === 4 && bannedLetters.length < 18) {
+              const nextBannedLetter = getNextBannedLetter(bannedLetters)
+              return [...bannedLetters, nextBannedLetter]
+            }
+            return bannedLetters
+          })(),
           last_move_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           updated_by: user.id
