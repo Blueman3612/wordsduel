@@ -86,11 +86,40 @@ interface GamePageProps {
   }>
 }
 
+interface PresenceState {
+  user_id: string;
+  online_at: string;
+  presence_ref?: string;
+}
+
 export default function GamePage({ params }: GamePageProps) {
   const { lobbyId } = use(params)
   const { user } = useAuth()
   const { showToast } = useToast()
   const router = useRouter()
+  
+  // Game parameters
+  const parameters = [
+    'at least 5 letters long',
+    'a singular non-proper noun, adjective, adverb, or infinitive verb'
+  ]
+  
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
+  const vowels = ['A', 'E', 'I', 'O', 'U']
+  const consonants = alphabet.filter(letter => !vowels.includes(letter))
+
+  // Helper function to get initial banned letters
+  const getInitialBannedLetters = () => {
+    // Randomly select 3 consonants
+    const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5)
+    const bannedConsonants = shuffledConsonants.slice(0, 3)
+    
+    // Randomly select 1 vowel
+    const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5)
+    const bannedVowel = shuffledVowels[0]
+    
+    return [...bannedConsonants, bannedVowel]
+  }
   
   // Basic state
   const [word, setWord] = useState('')
@@ -216,7 +245,7 @@ export default function GamePage({ params }: GamePageProps) {
     };
 
     fetchGameStateAndWords();
-  }, [lobbyId, players]);
+  }, [lobbyId, players, getInitialBannedLetters]);
 
   // Fetch initial player data
   useEffect(() => {
@@ -279,29 +308,6 @@ export default function GamePage({ params }: GamePageProps) {
 
     fetchPlayers()
   }, [lobbyId, user])
-
-  // Game parameters
-  const parameters = [
-    'at least 5 letters long',
-    'a singular non-proper noun, adjective, adverb, or infinitive verb'
-  ]
-  
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
-  const vowels = ['A', 'E', 'I', 'O', 'U']
-  const consonants = alphabet.filter(letter => !vowels.includes(letter))
-
-  // Helper function to get initial banned letters
-  const getInitialBannedLetters = () => {
-    // Randomly select 3 consonants
-    const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5)
-    const bannedConsonants = shuffledConsonants.slice(0, 3)
-    
-    // Randomly select 1 vowel
-    const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5)
-    const bannedVowel = shuffledVowels[0]
-    
-    return [...bannedConsonants, bannedVowel]
-  }
 
   // Helper function to get next banned letter
   const getNextBannedLetter = (currentBannedLetters: string[]) => {
@@ -413,7 +419,7 @@ export default function GamePage({ params }: GamePageProps) {
           
           Object.entries(state).forEach(([key, presences]) => {
             console.log('Processing presence key:', key, 'presences:', presences);
-            (presences as any[]).forEach(presence => {
+            (presences as { user_id: string; presence_ref?: string }[]).forEach(presence => {
               if (presence.user_id) {
                 console.log('Adding online user:', presence.user_id);
                 onlineIds.add(presence.user_id);
@@ -1070,7 +1076,7 @@ export default function GamePage({ params }: GamePageProps) {
             };
 
             // Start fetching profiles
-            let updatedPlayers = await attemptProfileFetch();
+            const updatedPlayers = await attemptProfileFetch();
             
             if (!updatedPlayers) {
               console.log('[Game End] All retries failed, cannot show game over modal');
