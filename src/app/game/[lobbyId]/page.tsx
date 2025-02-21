@@ -698,27 +698,112 @@ export default function GamePage({ params }: GamePageProps) {
     if (!lobbyId || !user || !gameStarted) return;
 
     let interval: NodeJS.Timeout;
+    let isHostChecked = false;
+    let isHost = false;
+    let lastKnownState: {
+      currentTurn: number;
+      player1Time: number;
+      player2Time: number;
+    } | null = null;
 
-    const runTimer = async () => {
-      const { data: lobbyData } = await supabase
-        .from('lobbies')
-        .select('host_id')
-        .eq('id', lobbyId)
-        .single();
-      
-      const isHost = lobbyData?.host_id === user.id;
-      if (!isHost) return; // Only host updates time
+    const checkHostAndSync = async () => {
+      // Only check host status once
+      if (!isHostChecked) {
+        const { data: lobbyData } = await supabase
+          .from('lobbies')
+          .select('host_id')
+          .eq('id', lobbyId)
+          .single();
+        
+        isHost = lobbyData?.host_id === user.id;
+        isHostChecked = true;
 
+        if (!isHost) return false;
+
+        // Do one-time sync when host starts timer
+        const { data: gameState } = await supabase
+          .from('game_state')
+          .select('last_move_at, current_turn, player1_time, player2_time')
+          .eq('lobby_id', lobbyId)
+          .single();
+
+        if (gameState?.last_move_at) {
+          const timeSinceLastMove = Date.now() - new Date(gameState.last_move_at).getTime();
+          const timeToSubtract = Math.floor(timeSinceLastMove / 1000) * 1000;
+          
+          const currentTime = gameState.current_turn === 0 ? gameState.player1_time : gameState.player2_time;
+          const newTime = Math.max(0, currentTime - timeToSubtract);
+          
+          // Store the last known state
+          lastKnownState = {
+            currentTurn: gameState.current_turn,
+            player1Time: gameState.current_turn === 0 ? newTime : gameState.player1_time,
+            player2Time: gameState.current_turn === 1 ? newTime : gameState.player2_time
+          };
+          
+          await supabase
+            .from('game_state')
+            .update({
+              [gameState.current_turn === 0 ? 'player1_time' : 'player2_time']: newTime,
+              status: newTime <= 0 ? 'finished' : 'active',
+              updated_at: new Date().toISOString(),
+              updated_by: user.id
+            })
+            .eq('lobby_id', lobbyId);
+        }
+      }
+      return isHost;
+    };
+
+    const startTimer = async () => {
+      const shouldContinue = await checkHostAndSync();
+      if (!shouldContinue) return;
+
+      // Start the interval only if we're the host
       interval = setInterval(async () => {
-        const currentPlayerTime = currentTurn === 0 ? player1Time : player2Time;
-        if (currentPlayerTime <= 0) return; // Game should be over
+        // Get the latest state from our stored value
+        if (!lastKnownState) {
+          const { data: currentState } = await supabase
+            .from('game_state')
+            .select('current_turn, player1_time, player2_time')
+            .eq('lobby_id', lobbyId)
+            .single();
+          
+          if (currentState) {
+            lastKnownState = {
+              currentTurn: currentState.current_turn,
+              player1Time: currentState.player1_time,
+              player2Time: currentState.player2_time
+            };
+          } else {
+            return;
+          }
+        }
+
+        // Safe to use lastKnownState now as we've checked it's not null
+        const currentPlayerTime = lastKnownState.currentTurn === 0 
+          ? lastKnownState.player1Time 
+          : lastKnownState.player2Time;
+
+        if (currentPlayerTime <= 0) {
+          if (interval) clearInterval(interval);
+          return;
+        }
 
         const newTime = Math.max(0, currentPlayerTime - 1000);
         
+        // Update our stored state first
+        lastKnownState = {
+          currentTurn: lastKnownState.currentTurn,
+          player1Time: lastKnownState.currentTurn === 0 ? newTime : lastKnownState.player1Time,
+          player2Time: lastKnownState.currentTurn === 1 ? newTime : lastKnownState.player2Time
+        };
+
+        // Then update the server
         const { error: stateError } = await supabase
           .from('game_state')
           .update({
-            [currentTurn === 0 ? 'player1_time' : 'player2_time']: newTime,
+            [lastKnownState.currentTurn === 0 ? 'player1_time' : 'player2_time']: newTime,
             status: newTime <= 0 ? 'finished' : 'active',
             updated_at: new Date().toISOString(),
             updated_by: user.id
@@ -731,12 +816,12 @@ export default function GamePage({ params }: GamePageProps) {
       }, 1000);
     };
 
-    runTimer();
+    startTimer();
 
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [lobbyId, user, currentTurn, player1Time, player2Time, gameStarted]);
+  }, [lobbyId, user?.id, gameStarted]); // Keep minimal dependencies
 
   return (
     <PageTransition>
