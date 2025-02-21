@@ -9,7 +9,7 @@ import { useToast } from '@/lib/context/toast'
 import { Avatar } from '@/components/ui/Avatar'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils/cn'
-import { calculateLevenshteinDistance, scoreWord, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
+import { calculateLevenshteinDistance, SCORING_WEIGHTS } from '@/lib/utils/word-scoring'
 import { AnimatedScore } from '@/components/game/AnimatedScore'
 import { Timer } from '@/components/game/Timer'
 import { Button } from '@/components/ui/Button'
@@ -47,13 +47,7 @@ interface Player {
   games_played: number
 }
 
-// Scoring weights - can be adjusted to taste
-const SCORING_CONFIG = {
-  letterRarityWeights: SCORING_WEIGHTS.RARITY.LETTER_WEIGHTS
-} as const
-
-type LetterRarity = typeof SCORING_CONFIG.letterRarityWeights
-type Letter = keyof LetterRarity
+type Letter = keyof typeof SCORING_WEIGHTS.RARITY.LETTER_WEIGHTS
 
 // Add these interfaces for type safety
 interface GameState {
@@ -90,13 +84,6 @@ interface GamePageProps {
   params: Promise<{
     lobbyId: string
   }>
-}
-
-interface DictionaryWord {
-  word: string
-  part_of_speech: string
-  definitions: string[]
-  phonetics?: string
 }
 
 export default function GamePage({ params }: GamePageProps) {
@@ -929,7 +916,7 @@ export default function GamePage({ params }: GamePageProps) {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [lobbyId, user?.id, gameStarted, words.length]);
+  }, [lobbyId, user?.id, gameStarted, words.length, user]);
 
   // Game state subscription effect
   useEffect(() => {
@@ -1288,8 +1275,8 @@ export default function GamePage({ params }: GamePageProps) {
 
             {/* Parameters List */}
             <ul className="space-y-1.5 text-white">
-              {parameters.map((param, index) => (
-                <li key={index}>
+              {parameters.map((param) => (
+                <li key={param}>
                   <div className="bg-white/5 backdrop-blur-md rounded-lg px-3 py-2 text-sm border border-white/10 hover:bg-white/10 transition-colors text-center font-medium">
                     {param}
                   </div>
