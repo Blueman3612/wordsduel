@@ -282,10 +282,10 @@ serve(async (req) => {
       { headers, status: 200 }
     )
   } catch (error) {
-    return new Response(
+  return new Response(
       JSON.stringify({ error: error.message }),
       { headers, status: 500 }
-    )
+  )
   }
 })
 

@@ -1218,20 +1218,17 @@ export default function GamePage({ params }: GamePageProps) {
                     size="lg"
                     className="ring-2 ring-purple-500/50"
                   />
-                  <div className="text-center space-y-1">
+                  <div className="text-center space-y-2">
                     <p className="font-medium text-white/90">{gameOverInfo.winner?.name}</p>
-                    <p className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                      {gameOverInfo.winner?.score || 0}
+                    <div className="space-y-1">
+                      <p className="text-3xl font-bold text-white/90">
+                        {gameOverInfo.winner?.elo || 0}
+                        <span className="text-green-400 text-xxl ml-2">
+                        (+{(gameOverInfo.winner?.elo || 0) - (gameOverInfo.winner?.originalElo || 0)})
+                      </span>
                     </p>
-                    <div className="text-sm space-y-0.5">
-                      <p className="text-white/60">
-                        {gameOverInfo.winner?.originalElo || 0}
-                        <span className="text-green-400 ml-2">
-                          (+{(gameOverInfo.winner?.elo || 0) - (gameOverInfo.winner?.originalElo || 0)})
-                        </span>
-                      </p>
-                      <p className="text-white/90 font-medium">
-                        New ELO: {gameOverInfo.winner?.elo || 0}
+                      <p className="text-xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                        {gameOverInfo.winner?.score || 0}
                       </p>
                     </div>
                   </div>
@@ -1245,20 +1242,17 @@ export default function GamePage({ params }: GamePageProps) {
                     size="lg"
                     className="ring-2 ring-white/20"
                   />
-                  <div className="text-center space-y-1">
+                  <div className="text-center space-y-2">
                     <p className="font-medium text-white/90">{gameOverInfo.loser?.name}</p>
-                    <p className="text-2xl font-bold text-white/60">
-                      {gameOverInfo.loser?.score || 0}
+                    <div className="space-y-1">
+                      <p className="text-3xl font-bold text-white/90">
+                        {gameOverInfo.loser?.elo || 0}
+                        <span className="text-red-400 text-xxl ml-2">
+                        ({(gameOverInfo.loser?.elo || 0) - (gameOverInfo.loser?.originalElo || 0)})
+                      </span>
                     </p>
-                    <div className="text-sm space-y-0.5">
-                      <p className="text-white/60">
-                        {gameOverInfo.loser?.originalElo || 0}
-                        <span className="text-red-400 ml-2">
-                          ({(gameOverInfo.loser?.elo || 0) - (gameOverInfo.loser?.originalElo || 0)})
-                        </span>
-                      </p>
-                      <p className="text-white/90 font-medium">
-                        New ELO: {gameOverInfo.loser?.elo || 0}
+                      <p className="text-xl font-bold text-white/60">
+                        {gameOverInfo.loser?.score || 0}
                       </p>
                     </div>
                   </div>

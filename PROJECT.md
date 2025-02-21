@@ -73,6 +73,16 @@ Logobout is a real-time multiplayer word game where players take turns typing wo
   - Host-managed time updates
   - Race condition prevention
   - Turn-based state management
+- Advanced ELO rating system:
+  - Real-time ELO updates
+  - Original vs new ELO tracking
+  - Visual ELO change indicators
+  - Persistent ELO history
+- Game over handling:
+  - Automatic winner/loser determination
+  - ELO change calculations
+  - Profile statistics updates
+  - Graceful state transitions
 
 ### UI/UX Features
 - Smooth page transitions with directional animations
@@ -90,12 +100,19 @@ Logobout is a real-time multiplayer word game where players take turns typing wo
 - Modern gradient buttons with hover effects
 - Profile pictures with:
   - Fallback initials
-  - Hover tooltips with player info
+  - Hover tooltips with player info and ELO
   - Active player highlighting
+  - ELO rating display
 - Real-time presence indicators
 - Turn indicators with visual feedback
 - Loading states with backdrop blur
 - Seamless tab switching without page reloads
+- Enhanced game over modal:
+  - Victory/Defeat banners
+  - ELO change visualization
+  - Score display with animations
+  - Loading state with spinner
+  - Player statistics
 
 ## File Structure
 ```
@@ -145,6 +162,7 @@ src/
   - display_name (text)
   - avatar_url (text, nullable)
   - elo (integer, default: 1000)
+  - games_played (integer, default: 0)
   - created_at (timestamp)
 
 - lobbies
@@ -170,6 +188,8 @@ src/
   - player1_time (integer)
   - player2_time (integer)
   - status (enum: active, paused, finished)
+  - elo_updated (boolean, default: false)
+  - banned_letters (text[])
   - last_move_at (timestamp)
   - updated_at (timestamp)
   - updated_by (uuid, foreign key to profiles)
