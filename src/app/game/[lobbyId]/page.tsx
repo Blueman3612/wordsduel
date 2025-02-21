@@ -145,11 +145,19 @@ export default function GamePage({ params }: GamePageProps) {
         }
 
         if (gameState) {
-          setCurrentTurn(gameState.current_turn);
+          // Ensure we start with turn 0 if no words have been played
+          const { count: wordCount } = await supabase
+            .from('game_words')
+            .select('id', { count: 'exact', head: true })
+            .eq('lobby_id', lobbyId);
+
+          const hasWords = (wordCount || 0) > 0;
+          
+          setCurrentTurn(hasWords ? gameState.current_turn : 0);
           setPlayer1Time(gameState.player1_time);
           setPlayer2Time(gameState.player2_time);
           setBannedLetters(gameState.banned_letters || []);
-          setGameStarted(true);
+          setGameStarted(hasWords);
 
           // Update player scores
           setPlayers(prev => {
@@ -695,7 +703,7 @@ export default function GamePage({ params }: GamePageProps) {
 
   // Timer effect - host updates game state every second
   useEffect(() => {
-    if (!lobbyId || !user || !gameStarted) return;
+    if (!lobbyId || !user || !gameStarted || !words.length) return; // Don't start until first word
 
     let interval: NodeJS.Timeout;
     let isHostChecked = false;
@@ -704,6 +712,7 @@ export default function GamePage({ params }: GamePageProps) {
       currentTurn: number;
       player1Time: number;
       player2Time: number;
+      lastMoveAt: string;
     } | null = null;
 
     const checkHostAndSync = async () => {
@@ -738,18 +747,9 @@ export default function GamePage({ params }: GamePageProps) {
           lastKnownState = {
             currentTurn: gameState.current_turn,
             player1Time: gameState.current_turn === 0 ? newTime : gameState.player1_time,
-            player2Time: gameState.current_turn === 1 ? newTime : gameState.player2_time
+            player2Time: gameState.current_turn === 1 ? newTime : gameState.player2_time,
+            lastMoveAt: gameState.last_move_at
           };
-          
-          await supabase
-            .from('game_state')
-            .update({
-              [gameState.current_turn === 0 ? 'player1_time' : 'player2_time']: newTime,
-              status: newTime <= 0 ? 'finished' : 'active',
-              updated_at: new Date().toISOString(),
-              updated_by: user.id
-            })
-            .eq('lobby_id', lobbyId);
         }
       }
       return isHost;
@@ -761,23 +761,38 @@ export default function GamePage({ params }: GamePageProps) {
 
       // Start the interval only if we're the host
       interval = setInterval(async () => {
-        // Get the latest state from our stored value
-        if (!lastKnownState) {
-          const { data: currentState } = await supabase
-            .from('game_state')
-            .select('current_turn, player1_time, player2_time')
-            .eq('lobby_id', lobbyId)
-            .single();
+        // Get the latest state if we don't have it or if it's stale
+        const { data: currentState } = await supabase
+          .from('game_state')
+          .select('current_turn, player1_time, player2_time, last_move_at')
+          .eq('lobby_id', lobbyId)
+          .single();
           
-          if (currentState) {
-            lastKnownState = {
-              currentTurn: currentState.current_turn,
-              player1Time: currentState.player1_time,
-              player2Time: currentState.player2_time
-            };
-          } else {
-            return;
-          }
+        if (!currentState) return;
+
+        // If we don't have a last known state, initialize it
+        if (!lastKnownState) {
+          lastKnownState = {
+            currentTurn: currentState.current_turn,
+            player1Time: currentState.player1_time,
+            player2Time: currentState.player2_time,
+            lastMoveAt: currentState.last_move_at
+          };
+          return; // Skip this tick to initialize state
+        }
+
+        // Check if there's been a new move (turn change)
+        const isNewMove = new Date(currentState.last_move_at).getTime() > new Date(lastKnownState.lastMoveAt).getTime();
+
+        if (isNewMove) {
+          // Update our local state to match the new game state
+          lastKnownState = {
+            currentTurn: currentState.current_turn,
+            player1Time: currentState.player1_time,
+            player2Time: currentState.player2_time,
+            lastMoveAt: currentState.last_move_at
+          };
+          return; // Skip this tick to avoid race conditions
         }
 
         // Safe to use lastKnownState now as we've checked it's not null
@@ -795,6 +810,7 @@ export default function GamePage({ params }: GamePageProps) {
         // Update our stored state first
         lastKnownState = {
           currentTurn: lastKnownState.currentTurn,
+          lastMoveAt: lastKnownState.lastMoveAt,
           player1Time: lastKnownState.currentTurn === 0 ? newTime : lastKnownState.player1Time,
           player2Time: lastKnownState.currentTurn === 1 ? newTime : lastKnownState.player2Time
         };
@@ -821,7 +837,7 @@ export default function GamePage({ params }: GamePageProps) {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [lobbyId, user?.id, gameStarted]); // Keep minimal dependencies
+  }, [lobbyId, user?.id, gameStarted, words.length]); // Added words.length dependency
 
   return (
     <PageTransition>
