@@ -1,5 +1,12 @@
+const getEnvironment = () => {
+  if (typeof Deno !== 'undefined') {
+    return Deno.env.get('ENVIRONMENT') || 'development';
+  }
+  return 'development';
+};
+
 export const corsHeaders = {
-  'Access-Control-Allow-Origin': Deno.env.get('ENVIRONMENT') === 'production'
+  'Access-Control-Allow-Origin': getEnvironment() === 'production'
     ? 'https://logobout.com'
     : 'http://localhost:3000',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
