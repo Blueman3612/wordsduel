@@ -189,14 +189,16 @@ export class GameSubscriptionManager {
       this.timerInterval = null;
     }
 
-    // Only host should run the timer
-    if (!this.isHost) return;
+    // Start periodic sync with server
+    this.timerInterval = setInterval(async () => {
+      if (!this.lastKnownState || this.lastKnownState.status !== 'active') {
+        if (this.timerInterval) clearInterval(this.timerInterval);
+        return;
+      }
 
-    // Initial synchronization
-    this.synchronizeTimers().then(({ player1Time, player2Time, currentTurn }) => {
-      if (!this.lastKnownState) return;
-
-      // Update the last known state with synchronized times
+      const { player1Time, player2Time, currentTurn } = await this.synchronizeTimers();
+      
+      // Update last known state
       this.lastKnownState = {
         ...this.lastKnownState,
         currentTurn,
@@ -204,85 +206,9 @@ export class GameSubscriptionManager {
         player2Time
       };
 
-      // Broadcast initial state to all clients
-      this.channel?.send({
-        type: 'broadcast',
-        event: 'timer_update',
-        payload: { 
-          player1Time, 
-          player2Time,
-          currentTurn // Add currentTurn to the broadcast
-        }
-      });
-
-      // Start the interval
-      this.timerInterval = setInterval(async () => {
-        if (!this.lastKnownState || this.lastKnownState.status !== 'active') {
-          if (this.timerInterval) clearInterval(this.timerInterval);
-          return;
-        }
-
-        // Re-check whose turn it is
-        const currentTurn = await this.determineCurrentTurn();
-        if (currentTurn !== this.lastKnownState.currentTurn) {
-          // Turn has changed, stop this timer
-          if (this.timerInterval) clearInterval(this.timerInterval);
-          return;
-        }
-
-        // Get the current player's time
-        const currentPlayerTime = currentTurn === 0 
-          ? this.lastKnownState.player1Time 
-          : this.lastKnownState.player2Time;
-
-        if (currentPlayerTime <= 0) {
-          if (this.timerInterval) clearInterval(this.timerInterval);
-          return;
-        }
-
-        // Decrement only the current player's time
-        const newTime = Math.max(0, currentPlayerTime - 1000);
-        const newState = {
-          ...this.lastKnownState,
-          player1Time: currentTurn === 0 ? newTime : this.lastKnownState.player1Time,
-          player2Time: currentTurn === 1 ? newTime : this.lastKnownState.player2Time
-        };
-
-        // Update last known state
-        this.lastKnownState = newState;
-
-        // Broadcast update to all clients
-        await this.channel?.send({
-          type: 'broadcast',
-          event: 'timer_update',
-          payload: {
-            player1Time: newState.player1Time,
-            player2Time: newState.player2Time,
-            currentTurn // Include currentTurn in broadcasts
-          }
-        });
-
-        // Notify callback
-        this.callbacks.onTimerUpdate?.(newState.player1Time, newState.player2Time);
-
-        // Update database every 5 seconds or when timer reaches 0
-        if (newTime === 0 || newTime % 5000 === 0) {
-          const { error: stateError } = await supabase
-            .from('game_state')
-            .update({
-              [currentTurn === 0 ? 'player1_time' : 'player2_time']: newTime,
-              current_turn: currentTurn, // Update the turn in database
-              updated_at: new Date().toISOString(),
-              updated_by: this.userId
-            })
-            .eq('lobby_id', this.lobbyId);
-
-          if (stateError) {
-            console.error('Error updating game time:', stateError);
-          }
-        }
-      }, 1000);
-    });
+      // Notify callback of time update
+      this.callbacks.onTimerUpdate?.(player1Time, player2Time);
+    }, 1000);
   }
 
   // Modify handleTurnChange to be more precise
@@ -345,11 +271,6 @@ export class GameSubscriptionManager {
         })
         .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
           this.callbacks.onPlayerLeave?.({ key, leftPresences: leftPresences as unknown as PresenceState[] });
-        })
-        .on('broadcast', { event: 'timer_update' }, (payload) => {
-          if (payload.payload) {
-            this.callbacks.onTimerUpdate?.(payload.payload.player1Time, payload.payload.player2Time);
-          }
         });
 
       // Set up game state subscription with turn change handling
