@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useReducer } from 'react'
 import { Send, X, Flag } from 'lucide-react'
 import { ActionModal } from '@/components/game/ActionModal'
 import { PageTransition } from '@/components/layout/PageTransition'
@@ -48,6 +48,7 @@ interface GameWord {
   part_of_speech?: string
   definition?: string
   phonetics?: string
+  created_at: string
 }
 
 interface WordCard {
@@ -110,6 +111,96 @@ interface GameClientProps {
   lobbyId: string
 }
 
+// New reducer types
+interface GameReducerState {
+  currentTurn: number;
+  player1Time: number;
+  player2Time: number;
+  bannedLetters: string[];
+  players: Player[];
+  gameStarted: boolean;
+  words: WordCard[];
+  isLoadingGameOver: boolean;
+}
+
+type GameStateAction =
+  | { type: 'UPDATE_GAME_STATE'; payload: GameState }
+  | { type: 'UPDATE_TIMER'; payload: { player1Time: number; player2Time: number } }
+  | { type: 'ADD_WORD'; payload: WordCard }
+  | { type: 'SET_PLAYERS'; payload: Player[] }
+  | { type: 'SET_LOADING_GAME_OVER'; payload: boolean }
+  | { type: 'INITIALIZE_STATE'; payload: { 
+      gameState: GameState | null; 
+      words: WordCard[]; 
+      players: Player[];
+    }
+  };
+
+// Game state reducer
+function gameReducer(state: GameReducerState, action: GameStateAction): GameReducerState {
+  switch (action.type) {
+    case 'UPDATE_GAME_STATE':
+      return {
+        ...state,
+        currentTurn: action.payload.current_turn,
+        player1Time: action.payload.player1_time,
+        player2Time: action.payload.player2_time,
+        bannedLetters: action.payload.banned_letters || [],
+        players: state.players.map((player: Player, index: number) => ({
+          ...player,
+          score: index === 0 ? action.payload.player1_score : action.payload.player2_score
+        }))
+      };
+    
+    case 'UPDATE_TIMER':
+      return {
+        ...state,
+        player1Time: action.payload.player1Time,
+        player2Time: action.payload.player2Time
+      };
+    
+    case 'ADD_WORD':
+      // Only add if word doesn't exist
+      if (state.words.some((w: WordCard) => w.word === action.payload.word)) {
+        return state;
+      }
+      return {
+        ...state,
+        words: [...state.words, action.payload],
+        gameStarted: true
+      };
+    
+    case 'SET_PLAYERS':
+      return {
+        ...state,
+        players: action.payload
+      };
+    
+    case 'SET_LOADING_GAME_OVER':
+      return {
+        ...state,
+        isLoadingGameOver: action.payload
+      };
+    
+    case 'INITIALIZE_STATE':
+      return {
+        ...state,
+        ...(action.payload.gameState ? {
+          currentTurn: action.payload.gameState.current_turn,
+          player1Time: action.payload.gameState.player1_time,
+          player2Time: action.payload.gameState.player2_time,
+          bannedLetters: action.payload.gameState.banned_letters || [],
+        } : {}),
+        players: action.payload.players,
+        words: action.payload.words,
+        gameStarted: action.payload.words.length > 0
+      };
+
+    default:
+      return state;
+  }
+}
+
 export function GameClient({ lobbyId }: GameClientProps) {
   const { user } = useAuth()
   const { showToast } = useToast()
@@ -125,23 +216,27 @@ export function GameClient({ lobbyId }: GameClientProps) {
   const vowels = ['A', 'E', 'I', 'O', 'U']
   const consonants = alphabet.filter(letter => !vowels.includes(letter))
 
+  // Add reducer while keeping existing state
+  const [gameState, dispatch] = useReducer(gameReducer, {
+    currentTurn: 0,
+    player1Time: 180000,
+    player2Time: 180000,
+    bannedLetters: [],
+    players: [],
+    words: [],
+    gameStarted: false,
+    isLoadingGameOver: false
+  });
+
   // Basic state
   const [word, setWord] = useState('')
-  const [words, setWords] = useState<WordCard[]>([])
   const [invalidLetters, setInvalidLetters] = useState<string[]>([])
   const [isFlashing, setIsFlashing] = useState(false)
   const [reportedWord, setReportedWord] = useState('')
-  const [players, setPlayers] = useState<Player[]>([])
-  const [currentTurn, setCurrentTurn] = useState<number>(0)
-  const [gameStarted, setGameStarted] = useState(false)
-  const [player1Time, setPlayer1Time] = useState(180000) // 3 minutes in ms
-  const [player2Time, setPlayer2Time] = useState(180000)
   const [showGameOverModal, setShowGameOverModal] = useState(false)
   const [gameOverInfo, setGameOverInfo] = useState<GameOverInfo | null>(null)
-  const [isLoadingGameOver, setIsLoadingGameOver] = useState(false)
   const [subscriptionManager, setSubscriptionManager] = useState<GameSubscriptionManager | null>(null)
   const [onlinePlayers, setOnlinePlayers] = useState<Set<string>>(new Set())
-  const [bannedLetters, setBannedLetters] = useState<string[]>([])
   const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
 
   // Refs
@@ -157,8 +252,8 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
   // Keep ref in sync with state
   useEffect(() => {
-    currentPlayersRef.current = players
-  }, [players])
+    currentPlayersRef.current = gameState.players
+  }, [gameState.players])
 
   // Helper function to get initial banned letters
   const getInitialBannedLetters = useCallback(() => {
@@ -197,7 +292,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
   // Function to check for banned letters
   const checkBannedLetters = (word: string): string[] => {
-    return bannedLetters.filter(letter => 
+    return gameState.bannedLetters.filter(letter => 
       word.toUpperCase().includes(letter)
     )
   }
@@ -229,7 +324,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
       top: scrollContainer.scrollHeight,
       behavior: 'smooth'
     })
-  }, [words])
+  }, [gameState.words])
 
   // Fetch initial game state and words
   useEffect(() => {
@@ -258,18 +353,13 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
           const hasWords = (wordCount || 0) > 0;
           
-          setCurrentTurn(hasWords ? gameState.current_turn : 0);
-          setPlayer1Time(gameState.player1_time);
-          setPlayer2Time(gameState.player2_time);
-          setBannedLetters(gameState.banned_letters || []);
-          setGameStarted(hasWords);
-
-          // Update player scores
-          setPlayers(prev => {
-            const updated = [...prev];
-            if (updated[0]) updated[0].score = gameState.player1_score;
-            if (updated[1]) updated[1].score = gameState.player2_score;
-            return updated;
+          dispatch({
+            type: 'UPDATE_GAME_STATE',
+            payload: gameState
+          });
+          dispatch({
+            type: 'SET_LOADING_GAME_OVER',
+            payload: hasWords
           });
         }
 
@@ -285,10 +375,10 @@ export function GameClient({ lobbyId }: GameClientProps) {
           return;
         }
 
-        if (gameWords) {
-          const wordCards: WordCard[] = gameWords.map(word => ({
+        if (gameWords && gameState) {
+          const wordCards: WordCard[] = gameWords.map((word: GameWord) => ({
             word: word.word,
-            player: players.find(p => p.id === word.player_id)?.name || 'Unknown',
+            player: 'Unknown', // We'll update this after we have players
             timestamp: new Date(word.created_at).getTime(),
             isInvalid: !word.is_valid,
             score: word.score,
@@ -300,7 +390,14 @@ export function GameClient({ lobbyId }: GameClientProps) {
             }
           }));
 
-          setWords(wordCards);
+          dispatch({
+            type: 'INITIALIZE_STATE',
+            payload: {
+              gameState,
+              words: wordCards,
+              players: [] // Initialize with empty players array
+            }
+          });
         }
       } catch (error) {
         console.error('Error in fetchGameStateAndWords:', error);
@@ -308,7 +405,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
     };
 
     fetchGameStateAndWords();
-  }, [lobbyId, players, getInitialBannedLetters]);
+  }, [lobbyId]); // Remove getInitialBannedLetters from dependencies
 
   // Fetch initial player data
   useEffect(() => {
@@ -361,7 +458,10 @@ export function GameClient({ lobbyId }: GameClientProps) {
           games_played: 0
         })) || []
 
-        setPlayers(playerProfiles)
+        dispatch({
+          type: 'SET_PLAYERS',
+          payload: playerProfiles
+        });
         console.log('Set players:', playerProfiles)
 
       } catch (error) {
@@ -378,7 +478,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
     // Store these in refs so we don't recreate the subscription manager on their changes
     const currentGetBannedLetters = getInitialBannedLetters;
-    const currentPlayers = players;
+    const currentPlayers = gameState.players;
     const currentShowGameOverModal = showGameOverModal;
 
     const setupSubscriptions = async () => {
@@ -401,26 +501,26 @@ export function GameClient({ lobbyId }: GameClientProps) {
               const newState = payload.new as GameState;
               if (!newState) return;
 
-              setCurrentTurn(newState.current_turn);
-              setPlayer1Time(newState.player1_time);
-              setPlayer2Time(newState.player2_time);
-              setBannedLetters(newState.banned_letters || []);
-
-              // Update player scores
-              setPlayers(prev => {
-                const updated = [...prev];
-                if (updated[0]) updated[0].score = newState.player1_score;
-                if (updated[1]) updated[1].score = newState.player2_score;
-                return updated;
+              dispatch({
+                type: 'UPDATE_GAME_STATE',
+                payload: newState
               });
 
               if (newState.status === 'finished' && !currentShowGameOverModal) {
-                setIsLoadingGameOver(true);
+                dispatch({
+                  type: 'SET_LOADING_GAME_OVER',
+                  payload: true
+                });
               }
             },
             onTimerUpdate: (p1Time, p2Time) => {
-              setPlayer1Time(p1Time);
-              setPlayer2Time(p2Time);
+              dispatch({
+                type: 'UPDATE_TIMER',
+                payload: {
+                  player1Time: p1Time,
+                  player2Time: p2Time
+                }
+              });
             },
             onPresenceSync: (state) => {
               const onlineIds = new Set<string>();
@@ -438,10 +538,9 @@ export function GameClient({ lobbyId }: GameClientProps) {
               if (!newWord) return;
 
               // Add word to the list
-              setWords(prev => {
-                if (prev.some(w => w.word === newWord.word)) return prev;
-
-                const wordCard: WordCard = {
+              dispatch({
+                type: 'ADD_WORD',
+                payload: {
                   word: newWord.word,
                   player: currentPlayers.find(p => p.id === newWord.player_id)?.name || 'Unknown',
                   timestamp: Date.now(),
@@ -453,13 +552,8 @@ export function GameClient({ lobbyId }: GameClientProps) {
                     definition: newWord.definition,
                     phonetics: newWord.phonetics
                   }
-                };
-
-                return [...prev, wordCard];
+                }
               });
-
-              // Update game started state
-              setGameStarted(true);
             }
           },
           currentGetBannedLetters
@@ -483,13 +577,13 @@ export function GameClient({ lobbyId }: GameClientProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const trimmedWord = word.trim().toLowerCase()
-    if (!trimmedWord || !players.length || !user) return
+    if (!trimmedWord || !gameState.players.length || !user) return
     
     setWord('')
 
-    const isPlayerOne = user.id === players[0]?.id
-    const isPlayerTwo = user.id === players[1]?.id
-    const isPlayersTurn = (currentTurn === 0 && isPlayerOne) || (currentTurn === 1 && isPlayerTwo)
+    const isPlayerOne = user.id === gameState.players[0]?.id
+    const isPlayerTwo = user.id === gameState.players[1]?.id
+    const isPlayersTurn = (gameState.currentTurn === 0 && isPlayerOne) || (gameState.currentTurn === 1 && isPlayerTwo)
 
     if (!isPlayersTurn) {
       showToast("It's not your turn!", 'error')
@@ -548,7 +642,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
       const validEntry = dictWords[0];
 
       // Calculate word score and breakdown
-      const previousWord = words.length > 0 ? words[words.length - 1].word : null
+      const previousWord = gameState.words.length > 0 ? gameState.words[gameState.words.length - 1].word : null
       const levenDistance = previousWord ? calculateLevenshteinDistance(trimmedWord, previousWord) : 0
       
       // Calculate rarity bonus
@@ -621,16 +715,16 @@ export function GameClient({ lobbyId }: GameClientProps) {
       const { error: stateError } = await supabase
         .from('game_state')
         .update({
-          current_turn: currentTurn === 0 ? 1 : 0,
-          [isPlayerOne ? 'player1_score' : 'player2_score']: players[isPlayerOne ? 0 : 1].score + totalScore,
-          [isPlayerOne ? 'player1_time' : 'player2_time']: (isPlayerOne ? player1Time : player2Time) + timeIncrement,
+          current_turn: gameState.currentTurn === 0 ? 1 : 0,
+          [isPlayerOne ? 'player1_score' : 'player2_score']: gameState.players[isPlayerOne ? 0 : 1].score + totalScore,
+          [isPlayerOne ? 'player1_time' : 'player2_time']: (isPlayerOne ? gameState.player1Time : gameState.player2Time) + timeIncrement,
           banned_letters: (() => {
             // If this is the 5th word (index 4) or every 5th word after that
-            if (words.length % 5 === 4 && bannedLetters.length < 18) {
-              const nextBannedLetter = getNextBannedLetter(bannedLetters)
-              return [...bannedLetters, nextBannedLetter]
+            if (gameState.words.length % 5 === 4 && gameState.bannedLetters.length < 18) {
+              const nextBannedLetter = getNextBannedLetter(gameState.bannedLetters)
+              return [...gameState.bannedLetters, nextBannedLetter]
             }
-            return bannedLetters
+            return gameState.bannedLetters
           })(),
           last_move_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -690,7 +784,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
             </Button>
           }
         >
-          {isLoadingGameOver ? (
+          {gameState.isLoadingGameOver ? (
             <div className="flex flex-col items-center justify-center space-y-4 py-8">
               <div className="w-12 h-12 border-4 border-purple-500/50 border-t-purple-500 rounded-full animate-spin" />
               <p className="text-white/70">Loading game results...</p>
@@ -804,7 +898,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
             {/* Letter Grid */}
             <div className="mt-auto relative">
               {/* Turn Indicator */}
-              {user?.id === players[currentTurn]?.id && (
+              {user?.id === gameState.players[gameState.currentTurn]?.id && (
                 <div className="absolute -top-12 left-1/2 -translate-x-1/2 whitespace-nowrap">
                   <p className="text-lg font-medium text-white/80 animate-pulse">
                     Your turn!
@@ -819,7 +913,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                       key={letter}
                       className={`
                         aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
-                        ${bannedLetters.includes(letter)
+                        ${gameState.bannedLetters.includes(letter)
                           ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
                              ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                           : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
@@ -835,7 +929,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                       key={letter}
                       className={`
                         aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
-                        ${bannedLetters.includes(letter)
+                        ${gameState.bannedLetters.includes(letter)
                           ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
                              ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                           : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
@@ -851,7 +945,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                       key={letter}
                       className={`
                         aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
-                        ${bannedLetters.includes(letter)
+                        ${gameState.bannedLetters.includes(letter)
                           ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
                              ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                           : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
@@ -868,7 +962,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                       key={letter}
                       className={`
                         aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
-                        ${bannedLetters.includes(letter)
+                        ${gameState.bannedLetters.includes(letter)
                           ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
                              ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                           : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
@@ -889,7 +983,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
               <div className="text-center mb-6">
               </div>
               <div className="flex flex-wrap items-start gap-y-4 justify-center w-full">
-                {words.map((wordCard) => (
+                {gameState.words.map((wordCard) => (
                   <div key={`${wordCard.word}-${wordCard.timestamp}`} className="flex items-center">
                     <div 
                       className="relative group overflow-visible" 
@@ -901,7 +995,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                           relative bg-white/10 backdrop-blur-md rounded-2xl p-4 shadow-lg overflow-visible
                           ${wordCard.isInvalid 
                             ? 'border-2 border-red-500/40 shadow-[0_0_10px_-3px_rgba(239,68,68,0.3)] bg-red-500/10' 
-                            : wordCard.player !== players[0]?.name 
+                            : wordCard.player !== gameState.players[0]?.name 
                               ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
                               : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
                           }
@@ -969,7 +1063,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                             group-hover:opacity-100 group-hover:pointer-events-auto
                             group-hover:w-[300px]
                             ${expandDirection === 'left' ? 'right-0' : 'left-0'}
-                            ${wordCard.player !== players[0]?.name 
+                            ${wordCard.player !== gameState.players[0]?.name 
                               ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
                               : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
                             }
@@ -1014,7 +1108,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                       )}
                     </div>
 
-                    {wordCard !== words[words.length - 1] && (
+                    {wordCard !== gameState.words[gameState.words.length - 1] && (
                       <div className="flex items-center mx-4">
                         <div className="w-4 h-px bg-white/20" />
                         <div className="w-2 h-2 rotate-45 border-t-2 border-r-2 border-white/20" />
@@ -1042,9 +1136,9 @@ export function GameClient({ lobbyId }: GameClientProps) {
                             // Clear invalid letters when input changes
                             setInvalidLetters([])
                           }}
-                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id}
+                          disabled={!user || !gameState.players.length || user.id !== gameState.players[gameState.currentTurn]?.id}
                           placeholder={
-                            user?.id === players[currentTurn]?.id 
+                            user?.id === gameState.players[gameState.currentTurn]?.id 
                             ? "Type your word..." 
                             : "Waiting for opponent..."
                           }
@@ -1061,7 +1155,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                         />
                         <button
                           type="submit"
-                          disabled={!user || !players.length || user.id !== players[currentTurn]?.id}
+                          disabled={!user || !gameState.players.length || user.id !== gameState.players[gameState.currentTurn]?.id}
                           className="p-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl shadow-lg transition-all duration-200 
                           hover:shadow-xl hover:scale-105 hover:from-purple-600 hover:to-pink-600 
                           active:scale-95 active:shadow-md active:translate-y-0.5
@@ -1080,38 +1174,38 @@ export function GameClient({ lobbyId }: GameClientProps) {
                     <div className="relative">
                       {/* Score Display */}
                       <div className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-                        <AnimatedScore value={players[0]?.score || 0} />
+                        <AnimatedScore value={gameState.players[0]?.score || 0} />
                       </div>
                       <Tooltip 
                         content={
                           <div className="flex flex-col items-center text-center">
-                            <span>{players[0]?.name || 'Unknown Player'}</span>
+                            <span>{gameState.players[0]?.name || 'Unknown Player'}</span>
                             <span className="text-white/60 text-sm">
-                              {players[0]?.elo || '1000'}
+                              {gameState.players[0]?.elo || '1000'}
                             </span>
                           </div>
                         }
                       >
                         <div className="rounded-full relative">
                           <Avatar
-                            src={players[0]?.avatar_url}
-                            name={players[0]?.name || '?'}
+                            src={gameState.players[0]?.avatar_url}
+                            name={gameState.players[0]?.name || '?'}
                             size="xl"
                             className={cn(
                               'ring-4 transition-all duration-300',
-                              currentTurn === 0
+                              gameState.currentTurn === 0
                                 ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
                                 : 'ring-white/20',
-                              getPlayerOnlineStatus(players[0]?.id) === false && 'opacity-50'
+                              getPlayerOnlineStatus(gameState.players[0]?.id) === false && 'opacity-50'
                             )}
                           />
                           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
                             <Timer 
-                              timeLeft={player1Time} 
-                              isActive={gameStarted && currentTurn === 0} 
+                              timeLeft={gameState.player1Time} 
+                              isActive={gameState.gameStarted && gameState.currentTurn === 0} 
                             />
                           </div>
-                          {getPlayerOnlineStatus(players[0]?.id) === false && (
+                          {getPlayerOnlineStatus(gameState.players[0]?.id) === false && (
                             <div className="absolute -bottom-1 -right-1 bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/20 z-10">
                               <div className="w-3 h-3 rounded-full bg-red-500/50 animate-pulse" />
                             </div>
@@ -1125,38 +1219,38 @@ export function GameClient({ lobbyId }: GameClientProps) {
                     <div className="relative">
                       {/* Score Display */}
                       <div className="absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-                        <AnimatedScore value={players[1]?.score || 0} />
+                        <AnimatedScore value={gameState.players[1]?.score || 0} />
                       </div>
                       <Tooltip 
                         content={
                           <div className="flex flex-col items-center text-center">
-                            <span>{players[1]?.name || 'Unknown Player'}</span>
+                            <span>{gameState.players[1]?.name || 'Unknown Player'}</span>
                             <span className="text-white/60 text-sm">
-                              {players[1]?.elo || '1000'}
+                              {gameState.players[1]?.elo || '1000'}
                             </span>
                           </div>
                         }
                       >
                         <div className="rounded-full relative">
                           <Avatar
-                            src={players[1]?.avatar_url}
-                            name={players[1]?.name || '?'}
+                            src={gameState.players[1]?.avatar_url}
+                            name={gameState.players[1]?.name || '?'}
                             size="xl"
                             className={cn(
                               'ring-4 transition-all duration-300',
-                              currentTurn === 1
+                              gameState.currentTurn === 1
                                 ? 'ring-purple-500 shadow-[0_0_25px_rgba(168,85,247,0.5)]'
                                 : 'ring-white/20',
-                              getPlayerOnlineStatus(players[1]?.id) === false && 'opacity-50'
+                              getPlayerOnlineStatus(gameState.players[1]?.id) === false && 'opacity-50'
                             )}
                           />
                           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
                             <Timer 
-                              timeLeft={player2Time} 
-                              isActive={gameStarted && currentTurn === 1} 
+                              timeLeft={gameState.player2Time} 
+                              isActive={gameState.gameStarted && gameState.currentTurn === 1} 
                             />
                           </div>
-                          {getPlayerOnlineStatus(players[1]?.id) === false && (
+                          {getPlayerOnlineStatus(gameState.players[1]?.id) === false && (
                             <div className="absolute -bottom-1 -right-1 bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/20 z-10">
                               <div className="w-3 h-3 rounded-full bg-red-500/50 animate-pulse" />
                             </div>
