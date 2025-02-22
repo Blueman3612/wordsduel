@@ -81,13 +81,12 @@ export class GameSubscriptionManager {
   private async determineCurrentTurn(): Promise<number> {
     try {
       // Get the last played word
-      const { data: lastWord, error } = await supabase
+      const { data: words, error } = await supabase
         .from('game_words')
         .select('player_id')
         .eq('lobby_id', this.lobbyId)
         .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
+        .limit(1);
 
       if (error) {
         console.error('Error fetching last word:', error);
@@ -95,9 +94,11 @@ export class GameSubscriptionManager {
       }
 
       // If no words played yet, it's player 1's turn
-      if (!lastWord) {
+      if (!words || words.length === 0) {
         return 0;
       }
+
+      const lastWord = words[0];
 
       // Get the player indices
       const { data: players } = await supabase
@@ -118,84 +119,195 @@ export class GameSubscriptionManager {
     }
   }
 
-  private startTimerUpdates() {
-    if (!this.isHost || this.timerInterval) return;
+  private async synchronizeTimers(): Promise<{ player1Time: number; player2Time: number; currentTurn: number }> {
+    try {
+      // Get the last word played and the game state
+      const [{ data: words }, { data: gameState }] = await Promise.all([
+        supabase
+          .from('game_words')
+          .select('created_at, player_id')
+          .eq('lobby_id', this.lobbyId)
+          .order('created_at', { ascending: false })
+          .limit(1),
+        supabase
+          .from('game_state')
+          .select('player1_time, player2_time')
+          .eq('lobby_id', this.lobbyId)
+          .single()
+      ]);
 
-    this.timerInterval = setInterval(async () => {
-      if (!this.lastKnownState || this.lastKnownState.status !== 'active') return;
-
-      const currentPlayerTime = this.lastKnownState.currentTurn === 0 
-        ? this.lastKnownState.player1Time 
-        : this.lastKnownState.player2Time;
-
-      if (currentPlayerTime <= 0) {
-        if (this.timerInterval) clearInterval(this.timerInterval);
-        return;
+      if (!gameState) {
+        console.error('No game state found during timer sync');
+        return { player1Time: 0, player2Time: 0, currentTurn: 0 };
       }
 
-      const newTime = Math.max(0, currentPlayerTime - 1000);
-      
-      const newState = {
-        ...this.lastKnownState,
-        player1Time: this.lastKnownState.currentTurn === 0 ? newTime : this.lastKnownState.player1Time,
-        player2Time: this.lastKnownState.currentTurn === 1 ? newTime : this.lastKnownState.player2Time
+      // Get current turn based on last word
+      const currentTurn = await this.determineCurrentTurn();
+
+      // If no words played, return the base times
+      if (!words || words.length === 0) {
+        return {
+          player1Time: gameState.player1_time,
+          player2Time: gameState.player2_time,
+          currentTurn
+        };
+      }
+
+      // Calculate time elapsed since last move
+      const lastMoveTime = new Date(words[0].created_at).getTime();
+      const currentTime = Date.now();
+      const elapsedTime = currentTime - lastMoveTime;
+
+      // Only subtract elapsed time from the current player's timer
+      const times = {
+        player1Time: gameState.player1_time,
+        player2Time: gameState.player2_time,
+        currentTurn
       };
 
-      // Update last known state
-      this.lastKnownState = newState;
-
-      // Broadcast timer update to all clients through the channel
-      await this.channel?.send({
-        type: 'broadcast',
-        event: 'timer_update',
-        payload: {
-          player1Time: newState.player1Time,
-          player2Time: newState.player2Time
-        }
-      });
-
-      // Notify callback of timer update
-      this.callbacks.onTimerUpdate?.(newState.player1Time, newState.player2Time);
-
-      // Only update database every 5 seconds or when timer reaches 0
-      if (newTime === 0 || newTime % 5000 === 0) {
-        const { error: stateError } = await supabase
-          .from('game_state')
-          .update({
-            [this.lastKnownState.currentTurn === 0 ? 'player1_time' : 'player2_time']: newTime,
-            updated_at: new Date().toISOString(),
-            updated_by: this.userId
-          })
-          .eq('lobby_id', this.lobbyId);
-
-        if (stateError) {
-          console.error('Error updating game time:', stateError);
-        }
+      if (currentTurn === 0) {
+        times.player1Time = Math.max(0, gameState.player1_time - elapsedTime);
+      } else {
+        times.player2Time = Math.max(0, gameState.player2_time - elapsedTime);
       }
-    }, 1000);
+
+      return times;
+    } catch (error) {
+      console.error('Error synchronizing timers:', error);
+      return this.lastKnownState ? {
+        player1Time: this.lastKnownState.player1Time,
+        player2Time: this.lastKnownState.player2Time,
+        currentTurn: this.lastKnownState.currentTurn
+      } : { player1Time: 0, player2Time: 0, currentTurn: 0 };
+    }
   }
 
-  // Add a method to handle turn changes
-  private handleTurnChange(newState: GameState) {
-    // Clear existing timer if it exists
+  private startTimerUpdates() {
+    // Clear any existing timer first
     if (this.timerInterval) {
       clearInterval(this.timerInterval);
       this.timerInterval = null;
     }
 
-    // Update last known state
-    this.lastKnownState = {
-      currentTurn: newState.current_turn,
-      player1Time: newState.player1_time,
-      player2Time: newState.player2_time,
-      lastMoveAt: newState.last_move_at,
-      status: newState.status as 'active' | 'paused' | 'finished'
-    };
+    // Only host should run the timer
+    if (!this.isHost) return;
 
-    // Restart timer if we're the host and game is active
-    if (this.isHost && newState.status === 'active') {
-      this.startTimerUpdates();
+    // Initial synchronization
+    this.synchronizeTimers().then(({ player1Time, player2Time, currentTurn }) => {
+      if (!this.lastKnownState) return;
+
+      // Update the last known state with synchronized times
+      this.lastKnownState = {
+        ...this.lastKnownState,
+        currentTurn,
+        player1Time,
+        player2Time
+      };
+
+      // Broadcast initial state to all clients
+      this.channel?.send({
+        type: 'broadcast',
+        event: 'timer_update',
+        payload: { 
+          player1Time, 
+          player2Time,
+          currentTurn // Add currentTurn to the broadcast
+        }
+      });
+
+      // Start the interval
+      this.timerInterval = setInterval(async () => {
+        if (!this.lastKnownState || this.lastKnownState.status !== 'active') {
+          if (this.timerInterval) clearInterval(this.timerInterval);
+          return;
+        }
+
+        // Re-check whose turn it is
+        const currentTurn = await this.determineCurrentTurn();
+        if (currentTurn !== this.lastKnownState.currentTurn) {
+          // Turn has changed, stop this timer
+          if (this.timerInterval) clearInterval(this.timerInterval);
+          return;
+        }
+
+        // Get the current player's time
+        const currentPlayerTime = currentTurn === 0 
+          ? this.lastKnownState.player1Time 
+          : this.lastKnownState.player2Time;
+
+        if (currentPlayerTime <= 0) {
+          if (this.timerInterval) clearInterval(this.timerInterval);
+          return;
+        }
+
+        // Decrement only the current player's time
+        const newTime = Math.max(0, currentPlayerTime - 1000);
+        const newState = {
+          ...this.lastKnownState,
+          player1Time: currentTurn === 0 ? newTime : this.lastKnownState.player1Time,
+          player2Time: currentTurn === 1 ? newTime : this.lastKnownState.player2Time
+        };
+
+        // Update last known state
+        this.lastKnownState = newState;
+
+        // Broadcast update to all clients
+        await this.channel?.send({
+          type: 'broadcast',
+          event: 'timer_update',
+          payload: {
+            player1Time: newState.player1Time,
+            player2Time: newState.player2Time,
+            currentTurn // Include currentTurn in broadcasts
+          }
+        });
+
+        // Notify callback
+        this.callbacks.onTimerUpdate?.(newState.player1Time, newState.player2Time);
+
+        // Update database every 5 seconds or when timer reaches 0
+        if (newTime === 0 || newTime % 5000 === 0) {
+          const { error: stateError } = await supabase
+            .from('game_state')
+            .update({
+              [currentTurn === 0 ? 'player1_time' : 'player2_time']: newTime,
+              current_turn: currentTurn, // Update the turn in database
+              updated_at: new Date().toISOString(),
+              updated_by: this.userId
+            })
+            .eq('lobby_id', this.lobbyId);
+
+          if (stateError) {
+            console.error('Error updating game time:', stateError);
+          }
+        }
+      }, 1000);
+    });
+  }
+
+  // Modify handleTurnChange to be more precise
+  private handleTurnChange(newState: GameState) {
+    // Always clear existing timer first
+    if (this.timerInterval) {
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
     }
+
+    // Synchronize timers and update state
+    this.synchronizeTimers().then(({ player1Time, player2Time, currentTurn }) => {
+      this.lastKnownState = {
+        currentTurn,
+        player1Time,
+        player2Time,
+        lastMoveAt: newState.last_move_at,
+        status: newState.status as 'active' | 'paused' | 'finished'
+      };
+
+      // Only host restarts timer if game is active
+      if (this.isHost && newState.status === 'active') {
+        this.startTimerUpdates();
+      }
+    });
   }
 
   async initialize() {
@@ -285,7 +397,33 @@ export class GameSubscriptionManager {
           table: 'game_words',
           filter: `lobby_id=eq.${this.lobbyId}`
         },
-        (payload) => {
+        async (payload) => {
+          // When a new word is played, we need to:
+          // 1. Stop any existing timer
+          if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+          }
+
+          // 2. Determine the new turn and sync timers
+          const { player1Time, player2Time, currentTurn } = await this.synchronizeTimers();
+          
+          // 3. Update last known state
+          if (this.lastKnownState) {
+            this.lastKnownState = {
+              ...this.lastKnownState,
+              currentTurn,
+              player1Time,
+              player2Time
+            };
+          }
+
+          // 4. Start timer if we're the host AND it's active
+          if (this.isHost && this.lastKnownState?.status === 'active') {
+            this.startTimerUpdates();
+          }
+
+          // 5. Notify about the new word
           this.callbacks.onGameWordAdded?.(payload as RealtimePostgresChangesPayload<GameWord>);
         }
       );
