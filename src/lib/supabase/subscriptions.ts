@@ -141,10 +141,102 @@ export class GameSubscriptionManager {
       return;
     }
 
-    // If host, initialize game state immediately
-    if (this.isHost) {
-      try {
-        // Get lobby config for base time
+    try {
+      // First set up the channel and all subscriptions
+      this.channel = supabase.channel(`game_room:${this.lobbyId}`, {
+        config: {
+          presence: {
+            key: this.userId,
+          },
+        },
+      });
+
+      // Set up presence handlers with more detailed presence data
+      this.channel
+        .on('presence', { event: 'sync' }, async () => {
+          if (!this.channel) return;
+          const state = this.channel.presenceState();
+          this.callbacks.onPresenceSync?.(state);
+        })
+        .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+          this.callbacks.onPlayerJoin?.({ key, newPresences: newPresences as unknown as PresenceState[] });
+        })
+        .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+          this.callbacks.onPlayerLeave?.({ key, leftPresences: leftPresences as unknown as PresenceState[] });
+        })
+        .on('broadcast', { event: 'timer_update' }, (payload) => {
+          if (payload.payload) {
+            this.callbacks.onTimerUpdate?.(payload.payload.player1Time, payload.payload.player2Time);
+          }
+        });
+
+      // Set up game state subscription
+      this.channel.on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'game_state',
+          filter: `lobby_id=eq.${this.lobbyId}`
+        },
+        (payload) => {
+          const newState = (payload as RealtimePostgresChangesPayload<GameState>).new as GameState;
+          
+          if (newState && newState.status) {
+            this.lastKnownState = {
+              currentTurn: newState.current_turn,
+              player1Time: newState.player1_time,
+              player2Time: newState.player2_time,
+              lastMoveAt: newState.last_move_at,
+              status: newState.status
+            };
+          }
+
+          this.callbacks.onGameStateChange?.(payload as RealtimePostgresChangesPayload<GameState>);
+        }
+      );
+
+      // Set up game words subscription
+      this.channel.on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'game_words',
+          filter: `lobby_id=eq.${this.lobbyId}`
+        },
+        (payload) => {
+          this.callbacks.onGameWordAdded?.(payload as RealtimePostgresChangesPayload<GameWord>);
+        }
+      );
+
+      // Subscribe and get profile data
+      await this.channel.subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('display_name, avatar_url')
+            .eq('id', this.userId)
+            .maybeSingle();
+
+          await this.channel?.track({
+            user_id: this.userId,
+            online_at: new Date().toISOString(),
+            display_name: profile?.display_name,
+            avatar_url: profile?.avatar_url
+          });
+        }
+      });
+
+      // After subscriptions are set up, handle game state
+      const { data: existingState } = await supabase
+        .from('game_state')
+        .select('*')
+        .eq('lobby_id', this.lobbyId)
+        .maybeSingle();
+
+      // If we're the host and no state exists, create it
+      if (!existingState && this.isHost) {
         const { data: lobbyData } = await supabase
           .from('lobbies')
           .select('game_config')
@@ -153,10 +245,9 @@ export class GameSubscriptionManager {
 
         const baseTime = lobbyData?.game_config?.base_time || 180000;
 
-        // Use upsert but only insert if doesn't exist
-        const { data: gameState, error: stateError } = await supabase
+        const { data: newState } = await supabase
           .from('game_state')
-          .upsert({
+          .insert({
             lobby_id: this.lobbyId,
             current_turn: 0,
             player1_time: baseTime,
@@ -168,115 +259,39 @@ export class GameSubscriptionManager {
             last_move_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
             updated_by: this.userId
-          }, {
-            onConflict: 'lobby_id',
-            ignoreDuplicates: true
           })
           .select()
           .single();
 
-        if (stateError) {
-          console.error('Error initializing game state:', stateError);
-          return;
-        }
-
-        if (gameState) {
-          this.lastKnownState = {
-            currentTurn: gameState.current_turn,
-            player1Time: gameState.player1_time,
-            player2Time: gameState.player2_time,
-            lastMoveAt: gameState.last_move_at,
-            status: gameState.status as 'active' | 'paused' | 'finished'
-          };
-        }
-      } catch (error) {
-        console.error('Error in game state initialization:', error);
-      }
-    }
-
-    this.channel = supabase.channel(`game_room:${this.lobbyId}`, {
-      config: {
-        presence: {
-          key: this.userId,
-        },
-      },
-    });
-
-    // Set up presence handlers
-    this.channel
-      .on('presence', { event: 'sync' }, async () => {
-        if (!this.channel) return;
-        const state = this.channel.presenceState();
-        this.callbacks.onPresenceSync?.(state);
-      })
-      .on('presence', { event: 'join' }, ({ key, newPresences }) => {
-        this.callbacks.onPlayerJoin?.({ key, newPresences: newPresences as unknown as PresenceState[] });
-      })
-      .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
-        this.callbacks.onPlayerLeave?.({ key, leftPresences: leftPresences as unknown as PresenceState[] });
-      })
-      // Add broadcast handler for timer updates
-      .on('broadcast', { event: 'timer_update' }, (payload) => {
-        if (payload.payload) {
-          this.callbacks.onTimerUpdate?.(payload.payload.player1Time, payload.payload.player2Time);
-        }
-      });
-
-    // Set up game state subscription
-    this.channel.on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'game_state',
-        filter: `lobby_id=eq.${this.lobbyId}`
-      },
-      (payload) => {
-        const newState = (payload as RealtimePostgresChangesPayload<GameState>).new as GameState;
-        
-        // Update last known state for timer management
-        if (newState && newState.status) {
+        if (newState) {
           this.lastKnownState = {
             currentTurn: newState.current_turn,
             player1Time: newState.player1_time,
             player2Time: newState.player2_time,
             lastMoveAt: newState.last_move_at,
-            status: newState.status
+            status: newState.status as 'active' | 'paused' | 'finished'
           };
         }
-
-        this.callbacks.onGameStateChange?.(payload as RealtimePostgresChangesPayload<GameState>);
+      } else if (existingState) {
+        this.lastKnownState = {
+          currentTurn: existingState.current_turn,
+          player1Time: existingState.player1_time,
+          player2Time: existingState.player2_time,
+          lastMoveAt: existingState.last_move_at,
+          status: existingState.status as 'active' | 'paused' | 'finished'
+        };
       }
-    );
 
-    // Set up game words subscription
-    this.channel.on(
-      'postgres_changes',
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'game_words',
-        filter: `lobby_id=eq.${this.lobbyId}`
-      },
-      (payload) => {
-        this.callbacks.onGameWordAdded?.(payload as RealtimePostgresChangesPayload<GameWord>);
-      }
-    );
-
-    // Subscribe and track presence
-    await this.channel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        await this.channel?.track({
-          user_id: this.userId,
-          online_at: new Date().toISOString(),
-        });
-        
-        // Start timer updates after successful subscription
-        if (this.isHost) {
+      // Start timer updates after a short delay to ensure all state is synced
+      if (this.isHost && this.lastKnownState?.status === 'active') {
+        setTimeout(() => {
           this.startTimerUpdates();
-        }
+        }, 1000);
       }
-    });
+
+    } catch (error) {
+      console.error('Error in subscription initialization:', error);
+    }
   }
 
   cleanup() {
