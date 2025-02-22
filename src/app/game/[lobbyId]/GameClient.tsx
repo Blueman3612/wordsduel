@@ -121,6 +121,14 @@ interface GameReducerState {
   gameStarted: boolean;
   words: WordCard[];
   isLoadingGameOver: boolean;
+  word: string;
+  invalidLetters: string[];
+  isFlashing: boolean;
+  reportedWord: string;
+  showGameOverModal: boolean;
+  gameOverInfo: GameOverInfo | null;
+  onlinePlayers: Set<string>;
+  expandDirection: 'left' | 'right';
 }
 
 type GameStateAction =
@@ -129,12 +137,15 @@ type GameStateAction =
   | { type: 'ADD_WORD'; payload: WordCard }
   | { type: 'SET_PLAYERS'; payload: Player[] }
   | { type: 'SET_LOADING_GAME_OVER'; payload: boolean }
-  | { type: 'INITIALIZE_STATE'; payload: { 
-      gameState: GameState | null; 
-      words: WordCard[]; 
-      players: Player[];
-    }
-  };
+  | { type: 'INITIALIZE_STATE'; payload: { gameState: GameState | null; words: WordCard[]; players: Player[] } }
+  | { type: 'SET_WORD'; payload: string }
+  | { type: 'SET_INVALID_LETTERS'; payload: string[] }
+  | { type: 'SET_FLASHING'; payload: boolean }
+  | { type: 'SET_REPORTED_WORD'; payload: string }
+  | { type: 'SET_GAME_OVER_MODAL'; payload: boolean }
+  | { type: 'SET_GAME_OVER_INFO'; payload: GameOverInfo | null }
+  | { type: 'SET_ONLINE_PLAYERS'; payload: Set<string> }
+  | { type: 'SET_EXPAND_DIRECTION'; payload: 'left' | 'right' };
 
 // Game state reducer
 function gameReducer(state: GameReducerState, action: GameStateAction): GameReducerState {
@@ -196,6 +207,54 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
         gameStarted: action.payload.words.length > 0
       };
 
+    case 'SET_WORD':
+      return {
+        ...state,
+        word: action.payload
+      };
+
+    case 'SET_INVALID_LETTERS':
+      return {
+        ...state,
+        invalidLetters: action.payload
+      };
+
+    case 'SET_FLASHING':
+      return {
+        ...state,
+        isFlashing: action.payload
+      };
+
+    case 'SET_REPORTED_WORD':
+      return {
+        ...state,
+        reportedWord: action.payload
+      };
+
+    case 'SET_GAME_OVER_MODAL':
+      return {
+        ...state,
+        showGameOverModal: action.payload
+      };
+
+    case 'SET_GAME_OVER_INFO':
+      return {
+        ...state,
+        gameOverInfo: action.payload
+      };
+
+    case 'SET_ONLINE_PLAYERS':
+      return {
+        ...state,
+        onlinePlayers: action.payload
+      };
+
+    case 'SET_EXPAND_DIRECTION':
+      return {
+        ...state,
+        expandDirection: action.payload
+      };
+
     default:
       return state;
   }
@@ -216,7 +275,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
   const vowels = ['A', 'E', 'I', 'O', 'U']
   const consonants = alphabet.filter(letter => !vowels.includes(letter))
 
-  // Add reducer while keeping existing state
+  // Initialize reducer with all state
   const [gameState, dispatch] = useReducer(gameReducer, {
     currentTurn: 0,
     player1Time: 180000,
@@ -225,70 +284,70 @@ export function GameClient({ lobbyId }: GameClientProps) {
     players: [],
     words: [],
     gameStarted: false,
-    isLoadingGameOver: false
-  });
+    isLoadingGameOver: false,
+    word: '',
+    invalidLetters: [],
+    isFlashing: false,
+    reportedWord: '',
+    showGameOverModal: false,
+    gameOverInfo: null,
+    onlinePlayers: new Set<string>([]),
+    expandDirection: 'right'
+  } as GameReducerState);
 
-  // Basic state
-  const [word, setWord] = useState('')
-  const [invalidLetters, setInvalidLetters] = useState<string[]>([])
-  const [isFlashing, setIsFlashing] = useState(false)
-  const [reportedWord, setReportedWord] = useState('')
-  const [showGameOverModal, setShowGameOverModal] = useState(false)
-  const [gameOverInfo, setGameOverInfo] = useState<GameOverInfo | null>(null)
-  const [subscriptionManager, setSubscriptionManager] = useState<GameSubscriptionManager | null>(null)
-  const [onlinePlayers, setOnlinePlayers] = useState<Set<string>>(new Set())
-  const [expandDirection, setExpandDirection] = useState<'left' | 'right'>('right')
+  // Remove individual useState calls since they're now in the reducer
+  const [subscriptionManager, setSubscriptionManager] = useState<GameSubscriptionManager | null>(null);
 
   // Refs
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const currentPlayersRef = useRef<Player[]>([])
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const currentPlayersRef = useRef<Player[]>([]);
   const gameEndStateRef = useRef<{
-    players: Player[]
-    gameOverInfo: GameOverInfo | null
+    players: Player[];
+    gameOverInfo: GameOverInfo | null;
   }>({
     players: [],
     gameOverInfo: null
-  })
+  });
 
   // Keep ref in sync with state
   useEffect(() => {
-    currentPlayersRef.current = gameState.players
-  }, [gameState.players])
+    currentPlayersRef.current = gameState.players;
+  }, [gameState.players]);
 
   // Helper function to get initial banned letters
   const getInitialBannedLetters = useCallback(() => {
     // Randomly select 3 consonants
-    const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5)
-    const bannedConsonants = shuffledConsonants.slice(0, 3)
+    const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5);
+    const bannedConsonants = shuffledConsonants.slice(0, 3);
     
     // Randomly select 1 vowel
-    const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5)
-    const bannedVowel = shuffledVowels[0]
+    const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5);
+    const bannedVowel = shuffledVowels[0];
     
-    return [...bannedConsonants, bannedVowel]
-  }, [consonants, vowels])
+    return [...bannedConsonants, bannedVowel];
+  }, [consonants, vowels]);
 
   // Helper function to get next banned letter
   const getNextBannedLetter = (currentBannedLetters: string[]) => {
     // Count currently banned vowels
-    const bannedVowelCount = currentBannedLetters.filter(letter => vowels.includes(letter)).length
-    const availableVowels = vowels.filter(v => !currentBannedLetters.includes(v))
+    const bannedVowelCount = currentBannedLetters.filter(letter => vowels.includes(letter)).length;
+    const availableVowels = vowels.filter(v => !currentBannedLetters.includes(v));
     
     // If we have banned 3 vowels, we can only ban consonants
     if (bannedVowelCount >= 3) {
-      const availableConsonants = consonants.filter(c => !currentBannedLetters.includes(c))
-      return availableConsonants[Math.floor(Math.random() * availableConsonants.length)]
+      const availableConsonants = consonants.filter(c => !currentBannedLetters.includes(c));
+      return availableConsonants[Math.floor(Math.random() * availableConsonants.length)];
     }
     
     // Otherwise, randomly choose between consonant and vowel
-    const shouldBanVowel = Math.random() < 0.2 && availableVowels.length > 2 // 20% chance to ban a vowel if we can
+    const shouldBanVowel = Math.random() < 0.2 && availableVowels.length > 2; // 20% chance to ban a vowel if we can
     if (shouldBanVowel) {
-      return availableVowels[Math.floor(Math.random() * availableVowels.length)]
+      return availableVowels[Math.floor(Math.random() * availableVowels.length)];
     } else {
-      const availableConsonants = consonants.filter(c => !currentBannedLetters.includes(c))
-      return availableConsonants[Math.floor(Math.random() * availableConsonants.length)]
+      const availableConsonants = consonants.filter(c => !currentBannedLetters.includes(c));
+      return availableConsonants[Math.floor(Math.random() * availableConsonants.length)];
     }
-  }
+  };
 
   // Function to check for banned letters
   const checkBannedLetters = (word: string): string[] => {
@@ -299,21 +358,21 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
   // Function to trigger flash animation
   const triggerFlash = () => {
-    setIsFlashing(true)
-    setTimeout(() => setIsFlashing(false), 1000)
-  }
+    dispatch({ type: 'SET_FLASHING', payload: true });
+    setTimeout(() => dispatch({ type: 'SET_FLASHING', payload: false }), 1000);
+  };
 
   // Update expand direction for word cards
   const updateExpandDirection = (event: React.MouseEvent<HTMLDivElement>) => {
-    const container = scrollContainerRef.current
-    if (!container) return
+    const container = scrollContainerRef.current;
+    if (!container) return;
     
-    const rect = (event.target as HTMLElement).getBoundingClientRect()
-    const containerRect = container.getBoundingClientRect()
-    const spaceOnRight = containerRect.right - rect.right
+    const rect = (event.target as HTMLElement).getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const spaceOnRight = containerRect.right - rect.right;
     
-    setExpandDirection(spaceOnRight < 310 ? 'left' : 'right')
-  }
+    dispatch({ type: 'SET_EXPAND_DIRECTION', payload: spaceOnRight < 310 ? 'left' : 'right' });
+  };
 
   // Auto-scroll to bottom when words change
   useEffect(() => {
@@ -479,7 +538,6 @@ export function GameClient({ lobbyId }: GameClientProps) {
     // Store these in refs so we don't recreate the subscription manager on their changes
     const currentGetBannedLetters = getInitialBannedLetters;
     const currentPlayers = gameState.players;
-    const currentShowGameOverModal = showGameOverModal;
 
     const setupSubscriptions = async () => {
       try {
@@ -506,7 +564,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                 payload: newState
               });
 
-              if (newState.status === 'finished' && !currentShowGameOverModal) {
+              if (newState.status === 'finished' && !gameState.showGameOverModal) {
                 dispatch({
                   type: 'SET_LOADING_GAME_OVER',
                   payload: true
@@ -531,13 +589,12 @@ export function GameClient({ lobbyId }: GameClientProps) {
                   }
                 });
               });
-              setOnlinePlayers(onlineIds);
+              dispatch({ type: 'SET_ONLINE_PLAYERS', payload: onlineIds });
             },
             onGameWordAdded: (payload) => {
               const newWord = payload.new as GameWord;
               if (!newWord) return;
 
-              // Add word to the list
               dispatch({
                 type: 'ADD_WORD',
                 payload: {
@@ -575,29 +632,29 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
   // Basic word submission handler
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const trimmedWord = word.trim().toLowerCase()
-    if (!trimmedWord || !gameState.players.length || !user) return
+    e.preventDefault();
+    const trimmedWord = gameState.word.trim().toLowerCase();
+    if (!trimmedWord || !gameState.players.length || !user) return;
     
-    setWord('')
+    dispatch({ type: 'SET_WORD', payload: '' });
 
-    const isPlayerOne = user.id === gameState.players[0]?.id
-    const isPlayerTwo = user.id === gameState.players[1]?.id
-    const isPlayersTurn = (gameState.currentTurn === 0 && isPlayerOne) || (gameState.currentTurn === 1 && isPlayerTwo)
+    const isPlayerOne = user.id === gameState.players[0]?.id;
+    const isPlayerTwo = user.id === gameState.players[1]?.id;
+    const isPlayersTurn = (gameState.currentTurn === 0 && isPlayerOne) || (gameState.currentTurn === 1 && isPlayerTwo);
 
     if (!isPlayersTurn) {
-      showToast("It's not your turn!", 'error')
-      return
+      showToast("It's not your turn!", 'error');
+      return;
     }
 
     // Check for banned letters
-    const foundBannedLetters = checkBannedLetters(trimmedWord)
+    const foundBannedLetters = checkBannedLetters(trimmedWord);
     if (foundBannedLetters.length > 0) {
-      setInvalidLetters(foundBannedLetters)
-      triggerFlash()
-      return
+      dispatch({ type: 'SET_INVALID_LETTERS', payload: foundBannedLetters });
+      triggerFlash();
+      return;
     }
-    setInvalidLetters([])
+    dispatch({ type: 'SET_INVALID_LETTERS', payload: [] });
 
     try {
       // Check if word has been used before
@@ -608,14 +665,14 @@ export function GameClient({ lobbyId }: GameClientProps) {
         .eq('word', trimmedWord);
 
       if (existingWords && existingWords.length > 0) {
-        showToast('This word has already been used!', 'error')
-        return
+        showToast('This word has already been used!', 'error');
+        return;
       }
 
       // Validate word length
       if (trimmedWord.length < 5) {
-        showToast('Word must be at least 5 letters long!', 'error')
-        return
+        showToast('Word must be at least 5 letters long!', 'error');
+        return;
       }
 
       // Validate word in dictionary
@@ -745,7 +802,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
   }
 
   // Compute online status in render instead of state
-  const getPlayerOnlineStatus = (playerId: string) => onlinePlayers.has(playerId)
+  const getPlayerOnlineStatus = (playerId: string) => gameState.onlinePlayers.has(playerId)
 
   // For now, keep the loading state return
   if (!user) {
@@ -766,10 +823,10 @@ export function GameClient({ lobbyId }: GameClientProps) {
       <main className="min-h-screen">
         {/* Game Over Modal */}
         <ActionModal
-          isOpen={showGameOverModal}
+          isOpen={gameState.showGameOverModal}
           onClose={() => {
-            setShowGameOverModal(false)
-            setGameOverInfo(null)
+            dispatch({ type: 'SET_GAME_OVER_MODAL', payload: false })
+            dispatch({ type: 'SET_GAME_OVER_INFO', payload: null })
             router.push('/')
           }}
           word=""
@@ -789,16 +846,16 @@ export function GameClient({ lobbyId }: GameClientProps) {
               <div className="w-12 h-12 border-4 border-purple-500/50 border-t-purple-500 rounded-full animate-spin" />
               <p className="text-white/70">Loading game results...</p>
             </div>
-          ) : gameOverInfo && gameOverInfo.winner && gameOverInfo.loser ? (
+          ) : gameState.gameOverInfo && gameState.gameOverInfo.winner && gameState.gameOverInfo.loser ? (
             <div className="space-y-8">
               {/* Victory/Defeat Banner */}
-              {user?.id === gameOverInfo.winner.id ? (
+              {user?.id === gameState.gameOverInfo.winner.id ? (
                 <div className="text-center">
                   <h3 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
                     Victory!
                   </h3>
                 </div>
-              ) : user?.id === gameOverInfo.loser.id ? (
+              ) : user?.id === gameState.gameOverInfo.loser.id ? (
                 <div className="text-center">
                   <h3 className="text-4xl font-bold text-white/80">
                     Defeat
@@ -811,22 +868,22 @@ export function GameClient({ lobbyId }: GameClientProps) {
                 {/* Winner */}
                 <div className="flex flex-col items-center gap-3 p-4 bg-white/10 rounded-xl border border-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.15)]">
                   <Avatar
-                    src={gameOverInfo.winner?.avatar_url}
-                    name={gameOverInfo.winner?.name || '?'}
+                    src={gameState.gameOverInfo?.winner?.avatar_url}
+                    name={gameState.gameOverInfo?.winner?.name || '?'}
                     size="lg"
                     className="ring-2 ring-purple-500/50"
                   />
                   <div className="text-center space-y-2">
-                    <p className="font-medium text-white/90">{gameOverInfo.winner?.name}</p>
+                    <p className="font-medium text-white/90">{gameState.gameOverInfo?.winner?.name}</p>
                     <div className="space-y-1">
                       <p className="text-3xl font-bold text-white/90">
-                        {gameOverInfo.winner?.elo || 0}
+                        {gameState.gameOverInfo?.winner?.elo || 0}
                         <span className="text-green-400 text-xxl ml-2">
-                        (+{(gameOverInfo.winner?.elo || 0) - (gameOverInfo.winner?.originalElo || 0)})
+                        (+{(gameState.gameOverInfo?.winner?.elo || 0) - (gameState.gameOverInfo?.winner?.originalElo || 0)})
                       </span>
                     </p>
                       <p className="text-xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                        {gameOverInfo.winner?.score || 0}
+                        {gameState.gameOverInfo?.winner?.score || 0}
                       </p>
                     </div>
                   </div>
@@ -835,22 +892,22 @@ export function GameClient({ lobbyId }: GameClientProps) {
                 {/* Loser */}
                 <div className="flex flex-col items-center gap-3 p-4 bg-white/5 rounded-xl border border-white/10">
                   <Avatar
-                    src={gameOverInfo.loser?.avatar_url}
-                    name={gameOverInfo.loser?.name || '?'}
+                    src={gameState.gameOverInfo?.loser?.avatar_url}
+                    name={gameState.gameOverInfo?.loser?.name || '?'}
                     size="lg"
                     className="ring-2 ring-white/20"
                   />
                   <div className="text-center space-y-2">
-                    <p className="font-medium text-white/90">{gameOverInfo.loser?.name}</p>
+                    <p className="font-medium text-white/90">{gameState.gameOverInfo?.loser?.name}</p>
                     <div className="space-y-1">
                       <p className="text-3xl font-bold text-white/90">
-                        {gameOverInfo.loser?.elo || 0}
+                        {gameState.gameOverInfo?.loser?.elo || 0}
                         <span className="text-red-400 text-xxl ml-2">
-                        ({(gameOverInfo.loser?.elo || 0) - (gameOverInfo.loser?.originalElo || 0)})
+                        ({(gameState.gameOverInfo?.loser?.elo || 0) - (gameState.gameOverInfo?.loser?.originalElo || 0)})
                       </span>
                     </p>
                       <p className="text-xl font-bold text-white/60">
-                        {gameOverInfo.loser?.score || 0}
+                        {gameState.gameOverInfo?.loser?.score || 0}
                       </p>
                     </div>
                   </div>
@@ -859,7 +916,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
               {/* Game End Reason */}
               <div className="text-center text-sm text-white/60">
-                Game ended due to {gameOverInfo.reason === 'time' ? 'time expiration' : 'forfeit'}
+                Game ended due to {gameState.gameOverInfo?.reason === 'time' ? 'time expiration' : 'forfeit'}
               </div>
             </div>
           ) : (
@@ -871,9 +928,9 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
         {/* Report Modal */}
         <ActionModal
-          isOpen={!!reportedWord}
-          onClose={() => setReportedWord('')}
-          word={reportedWord || ''}
+          isOpen={!!gameState.reportedWord}
+          onClose={() => dispatch({ type: 'SET_REPORTED_WORD', payload: '' })}
+          word={gameState.reportedWord || ''}
           mode="report"
         />
 
@@ -915,7 +972,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                         aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
                         ${gameState.bannedLetters.includes(letter)
                           ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
-                             ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
+                             ${gameState.isFlashing && gameState.invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                           : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
                       `}
                     >
@@ -931,7 +988,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                         aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
                         ${gameState.bannedLetters.includes(letter)
                           ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
-                             ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
+                             ${gameState.isFlashing && gameState.invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                           : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
                       `}
                     >
@@ -947,7 +1004,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                         aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
                         ${gameState.bannedLetters.includes(letter)
                           ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
-                             ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
+                             ${gameState.isFlashing && gameState.invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                           : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
                       `}
                     >
@@ -964,7 +1021,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                         aspect-square rounded-xl flex items-center justify-center text-lg font-medium transition-all duration-200
                         ${gameState.bannedLetters.includes(letter)
                           ? `bg-red-500/25 text-red-200 ring-2 ring-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.5)]
-                             ${isFlashing && invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
+                             ${gameState.isFlashing && gameState.invalidLetters.includes(letter) ? 'animate-[flash_1s_ease-in-out]' : ''}`
                           : 'bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70'}
                       `}
                     >
@@ -1062,7 +1119,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                             opacity-0 pointer-events-none
                             group-hover:opacity-100 group-hover:pointer-events-auto
                             group-hover:w-[300px]
-                            ${expandDirection === 'left' ? 'right-0' : 'left-0'}
+                            ${gameState.expandDirection === 'left' ? 'right-0' : 'left-0'}
                             ${wordCard.player !== gameState.players[0]?.name 
                               ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
                               : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
@@ -1074,7 +1131,10 @@ export function GameClient({ lobbyId }: GameClientProps) {
                             <p className="text-2xl font-medium text-white">{wordCard.word.toLowerCase()}</p>
                             {/* Report Button */}
                             <button
-                              onClick={() => setReportedWord(wordCard.word)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                dispatch({ type: 'SET_REPORTED_WORD', payload: wordCard.word })
+                              }}
                               className="absolute top-0 right-0 p-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90 transition-colors"
                               aria-label="Report word"
                             >
@@ -1130,11 +1190,11 @@ export function GameClient({ lobbyId }: GameClientProps) {
                       <form className="flex gap-4" onSubmit={handleSubmit}>
                         <input
                           type="text"
-                          value={word}
+                          value={gameState.word}
                           onChange={(e) => {
-                            setWord(e.target.value)
+                            dispatch({ type: 'SET_WORD', payload: e.target.value })
                             // Clear invalid letters when input changes
-                            setInvalidLetters([])
+                            dispatch({ type: 'SET_INVALID_LETTERS', payload: [] })
                           }}
                           disabled={!user || !gameState.players.length || user.id !== gameState.players[gameState.currentTurn]?.id}
                           placeholder={
@@ -1148,7 +1208,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                             focus:ring-purple-400 transition-all hover:border-white/40
                             disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-white/20
                             `,
-                            invalidLetters.length > 0 
+                            gameState.invalidLetters.length > 0 
                               ? 'border-red-500/50 focus:ring-red-400' 
                               : 'border-white/20'
                           )}
