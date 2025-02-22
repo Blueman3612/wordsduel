@@ -131,7 +131,7 @@ export class GameSubscriptionManager {
           .limit(1),
         supabase
           .from('game_state')
-          .select('player1_time, player2_time')
+          .select('player1_time, player2_time, last_move_at')
           .eq('lobby_id', this.lobbyId)
           .single()
       ]);
@@ -158,17 +158,18 @@ export class GameSubscriptionManager {
       const currentTime = Date.now();
       const elapsedTime = currentTime - lastMoveTime;
 
-      // Only subtract elapsed time from the current player's timer
+      // Get the stored times from game state
       const times = {
         player1Time: gameState.player1_time,
         player2Time: gameState.player2_time,
         currentTurn
       };
 
+      // Only subtract elapsed time from the current player's timer
       if (currentTurn === 0) {
-        times.player1Time = Math.max(0, gameState.player1_time - elapsedTime);
+        times.player1Time = Math.max(0, times.player1Time - elapsedTime);
       } else {
-        times.player2Time = Math.max(0, gameState.player2_time - elapsedTime);
+        times.player2Time = Math.max(0, times.player2Time - elapsedTime);
       }
 
       return times;
@@ -189,25 +190,32 @@ export class GameSubscriptionManager {
       this.timerInterval = null;
     }
 
-    // Start periodic sync with server
-    this.timerInterval = setInterval(async () => {
+    // Start a local timer that just counts down based on the last sync
+    this.timerInterval = setInterval(() => {
       if (!this.lastKnownState || this.lastKnownState.status !== 'active') {
         if (this.timerInterval) clearInterval(this.timerInterval);
         return;
       }
 
-      const { player1Time, player2Time, currentTurn } = await this.synchronizeTimers();
-      
-      // Update last known state
-      this.lastKnownState = {
+      const currentTime = this.lastKnownState.currentTurn === 0 
+        ? this.lastKnownState.player1Time 
+        : this.lastKnownState.player2Time;
+
+      if (currentTime <= 0) {
+        if (this.timerInterval) clearInterval(this.timerInterval);
+        return;
+      }
+
+      // Just decrement the appropriate timer locally
+      const newTime = Math.max(0, currentTime - 1000);
+      const newState = {
         ...this.lastKnownState,
-        currentTurn,
-        player1Time,
-        player2Time
+        player1Time: this.lastKnownState.currentTurn === 0 ? newTime : this.lastKnownState.player1Time,
+        player2Time: this.lastKnownState.currentTurn === 1 ? newTime : this.lastKnownState.player2Time
       };
 
-      // Notify callback of time update
-      this.callbacks.onTimerUpdate?.(player1Time, player2Time);
+      this.lastKnownState = newState;
+      this.callbacks.onTimerUpdate?.(newState.player1Time, newState.player2Time);
     }, 1000);
   }
 
@@ -319,17 +327,14 @@ export class GameSubscriptionManager {
           filter: `lobby_id=eq.${this.lobbyId}`
         },
         async (payload) => {
-          // When a new word is played, we need to:
-          // 1. Stop any existing timer
+          // When a new word is played, sync with server
           if (this.timerInterval) {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
           }
 
-          // 2. Determine the new turn and sync timers
           const { player1Time, player2Time, currentTurn } = await this.synchronizeTimers();
           
-          // 3. Update last known state
           if (this.lastKnownState) {
             this.lastKnownState = {
               ...this.lastKnownState,
@@ -339,12 +344,9 @@ export class GameSubscriptionManager {
             };
           }
 
-          // 4. Start timer if we're the host AND it's active
-          if (this.isHost && this.lastKnownState?.status === 'active') {
-            this.startTimerUpdates();
-          }
+          // Start local timer
+          this.startTimerUpdates();
 
-          // 5. Notify about the new word
           this.callbacks.onGameWordAdded?.(payload as RealtimePostgresChangesPayload<GameWord>);
         }
       );
