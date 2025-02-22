@@ -153,7 +153,7 @@ export class GameSubscriptionManager {
 
         const baseTime = lobbyData?.game_config?.base_time || 180000;
 
-        // Create or update game state
+        // Use upsert but only insert if doesn't exist
         const { data: gameState, error: stateError } = await supabase
           .from('game_state')
           .upsert({
@@ -169,7 +169,8 @@ export class GameSubscriptionManager {
             updated_at: new Date().toISOString(),
             updated_by: this.userId
           }, {
-            onConflict: 'lobby_id'
+            onConflict: 'lobby_id',
+            ignoreDuplicates: true
           })
           .select()
           .single();
