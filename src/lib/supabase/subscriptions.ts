@@ -142,7 +142,7 @@ export class GameSubscriptionManager {
     }
 
     try {
-      // First set up the channel and all subscriptions
+      // First set up the channel
       this.channel = supabase.channel(`game_room:${this.lobbyId}`, {
         config: {
           presence: {
@@ -151,7 +151,14 @@ export class GameSubscriptionManager {
         },
       });
 
-      // Set up presence handlers with more detailed presence data
+      // Get profile data first
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('display_name, avatar_url')
+        .eq('id', this.userId)
+        .maybeSingle();
+
+      // Set up all channel handlers
       this.channel
         .on('presence', { event: 'sync' }, async () => {
           if (!this.channel) return;
@@ -210,25 +217,22 @@ export class GameSubscriptionManager {
         }
       );
 
-      // Subscribe and get profile data
-      await this.channel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('display_name, avatar_url')
-            .eq('id', this.userId)
-            .maybeSingle();
-
-          await this.channel?.track({
-            user_id: this.userId,
-            online_at: new Date().toISOString(),
-            display_name: profile?.display_name,
-            avatar_url: profile?.avatar_url
-          });
-        }
+      // Subscribe and track presence
+      await new Promise<void>((resolve) => {
+        this.channel?.subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            await this.channel?.track({
+              user_id: this.userId,
+              online_at: new Date().toISOString(),
+              display_name: profile?.display_name,
+              avatar_url: profile?.avatar_url
+            });
+            resolve();
+          }
+        });
       });
 
-      // After subscriptions are set up, handle game state
+      // After channel is fully subscribed, handle game state
       const { data: existingState } = await supabase
         .from('game_state')
         .select('*')
@@ -245,7 +249,8 @@ export class GameSubscriptionManager {
 
         const baseTime = lobbyData?.game_config?.base_time || 180000;
 
-        const { data: newState } = await supabase
+        // Try to create game state with a unique constraint check
+        const { data: newState, error } = await supabase
           .from('game_state')
           .insert({
             lobby_id: this.lobbyId,
@@ -263,7 +268,24 @@ export class GameSubscriptionManager {
           .select()
           .single();
 
-        if (newState) {
+        // If insert failed, try to get existing state one more time
+        if (error) {
+          const { data: retryState } = await supabase
+            .from('game_state')
+            .select('*')
+            .eq('lobby_id', this.lobbyId)
+            .single();
+
+          if (retryState) {
+            this.lastKnownState = {
+              currentTurn: retryState.current_turn,
+              player1Time: retryState.player1_time,
+              player2Time: retryState.player2_time,
+              lastMoveAt: retryState.last_move_at,
+              status: retryState.status as 'active' | 'paused' | 'finished'
+            };
+          }
+        } else if (newState) {
           this.lastKnownState = {
             currentTurn: newState.current_turn,
             player1Time: newState.player1_time,
@@ -282,7 +304,7 @@ export class GameSubscriptionManager {
         };
       }
 
-      // Start timer updates after a short delay to ensure all state is synced
+      // Start timer updates after everything is initialized
       if (this.isHost && this.lastKnownState?.status === 'active') {
         setTimeout(() => {
           this.startTimerUpdates();
