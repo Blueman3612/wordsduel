@@ -19,6 +19,37 @@ import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import { GameSubscriptionManager } from '@/lib/supabase/subscriptions'
 
 // Interfaces
+interface GameState {
+  lobby_id: string
+  current_turn: number
+  player1_time: number
+  player2_time: number
+  player1_score: number
+  player2_score: number
+  status: 'active' | 'paused' | 'finished'
+  banned_letters: string[]
+  last_move_at: string
+  updated_at: string
+  updated_by: string
+  elo_updated?: boolean
+}
+
+interface GameWord {
+  lobby_id: string
+  word: string
+  player_id: string
+  is_valid: boolean
+  score: number
+  score_breakdown: {
+    lengthScore: number
+    levenBonus: number
+    rarityBonus: number
+  }
+  part_of_speech?: string
+  definition?: string
+  phonetics?: string
+}
+
 interface WordCard {
   word: string
   player: string
@@ -49,36 +80,6 @@ interface Player {
 }
 
 type Letter = keyof typeof SCORING_WEIGHTS.RARITY.LETTER_WEIGHTS
-
-interface GameState {
-  lobby_id: string
-  current_turn: number
-  player1_time: number
-  player2_time: number
-  player1_score: number
-  player2_score: number
-  status: 'active' | 'paused' | 'finished'
-  banned_letters: string[]
-  last_move_at: string
-  updated_at: string
-  updated_by: string
-  elo_updated?: boolean
-}
-
-interface GameWord {
-  word: string
-  player_id: string
-  is_valid: boolean
-  score: number
-  score_breakdown: {
-    lengthScore: number
-    levenBonus: number
-    rarityBonus: number
-  }
-  part_of_speech?: string
-  definition?: string
-  phonetics?: string
-}
 
 interface PresenceState {
   user_id: string
@@ -371,224 +372,78 @@ export function GameClient({ lobbyId }: GameClientProps) {
     fetchPlayers()
   }, [lobbyId, user])
 
-  // Subscription effect
+  // Subscription setup effect
   useEffect(() => {
-    if (!lobbyId || !user) return
+    if (!lobbyId || !user) return;
 
-    let isSubscribed = true
-    const initializeSubscriptions = async () => {
+    // Store these in refs so we don't recreate the subscription manager on their changes
+    const currentGetBannedLetters = getInitialBannedLetters;
+    const currentPlayers = players;
+    const currentShowGameOverModal = showGameOverModal;
+
+    const setupSubscriptions = async () => {
       try {
         // Get lobby data to determine if user is host
         const { data: lobbyData } = await supabase
           .from('lobbies')
-          .select('host_id, game_config')
+          .select('host_id')
           .eq('id', lobbyId)
-          .single()
+          .single();
 
-        const isHost = lobbyData?.host_id === user.id
+        const isHost = lobbyData?.host_id === user.id;
 
-        // Create subscription manager
         const manager = new GameSubscriptionManager(
           lobbyId,
           user.id,
           isHost,
           {
-            onPresenceSync: async (state) => {
-              if (!isSubscribed) return
-              console.log('Raw presence state:', state)
-              
-              const onlineIds = new Set<string>()
-              Object.entries(state).forEach(([key, presences]) => {
-                console.log('Processing presence key:', key, 'presences:', presences)
-                ;(presences as PresenceState[]).forEach(presence => {
-                  if (presence.user_id) {
-                    console.log('Adding online user:', presence.user_id)
-                    onlineIds.add(presence.user_id)
-                  }
-                })
-              })
+            onGameStateChange: (payload) => {
+              const newState = payload.new as GameState;
+              if (!newState) return;
 
-              console.log('Final online IDs:', Array.from(onlineIds))
-              setOnlinePlayers(onlineIds)
+              setCurrentTurn(newState.current_turn);
+              setPlayer1Time(newState.player1_time);
+              setPlayer2Time(newState.player2_time);
+              setBannedLetters(newState.banned_letters || []);
 
-              // Host-specific: Initialize game state when both players are present
-              if (isHost && onlineIds.size === 2) {
-                try {
-                  const { data: existingState, error: checkError } = await supabase
-                    .from('game_state')
-                    .select('*')
-                    .eq('lobby_id', lobbyId)
-                    .maybeSingle()
-
-                  if (checkError) {
-                    console.error('Error checking game state:', checkError)
-                    return
-                  }
-
-                  if (!existingState) {
-                    console.log('Initializing game state with config:', lobbyData?.game_config)
-                    const { error: stateError } = await supabase
-                      .from('game_state')
-                      .upsert({
-                        lobby_id: lobbyId,
-                        current_turn: 0,
-                        player1_time: lobbyData?.game_config.base_time || 180000,
-                        player2_time: lobbyData?.game_config.base_time || 180000,
-                        player1_score: 0,
-                        player2_score: 0,
-                        status: 'active',
-                        banned_letters: getInitialBannedLetters(),
-                        last_move_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString(),
-                        updated_by: user.id
-                      }, {
-                        onConflict: 'lobby_id'
-                      })
-
-                    if (stateError) {
-                      console.error('Error initializing game state:', stateError)
-                      return
-                    }
-                  }
-                } catch (error) {
-                  console.error('Error in game state initialization:', error)
-                }
-              }
-            },
-            onPlayerJoin: ({ key, newPresences }) => {
-              console.log('Player joined:', key, newPresences)
-            },
-            onPlayerLeave: ({ key, leftPresences }) => {
-              console.log('Player left:', key, leftPresences)
-            },
-            onGameStateChange: async (payload) => {
-              if (!isSubscribed) return
-
-              const newState = payload.new as GameState
-              console.log('[Game State Sub] Received state update:', {
-                status: newState.status,
-                elo_updated: newState.elo_updated,
-                showingModal: showGameOverModal,
-                currentPlayers: currentPlayersRef.current.map(p => ({
-                  id: p.id,
-                  name: p.name,
-                  elo: p.elo,
-                  originalElo: p.originalElo
-                }))
-              })
-
-              // Update game state
-              setCurrentTurn(newState.current_turn)
-              setPlayer1Time(newState.player1_time)
-              setPlayer2Time(newState.player2_time)
-              setBannedLetters(newState.banned_letters || [])
-              
               // Update player scores
               setPlayers(prev => {
-                const updated = [...prev]
-                if (updated[0]) updated[0].score = newState.player1_score
-                if (updated[1]) updated[1].score = newState.player2_score
-                return updated
-              })
+                const updated = [...prev];
+                if (updated[0]) updated[0].score = newState.player1_score;
+                if (updated[1]) updated[1].score = newState.player2_score;
+                return updated;
+              });
 
-              if (newState.status === 'finished' && !showGameOverModal) {
-                console.log('[Game End] Game finished, checking profiles')
-                setIsLoadingGameOver(true)
-
-                try {
-                  // Get updated profiles with new ELO
-                  const { data: profiles, error: profileError } = await supabase
-                    .from('profiles')
-                    .select('id, display_name, elo')
-                    .in('id', currentPlayersRef.current.map(p => p.id))
-
-                  if (profileError) throw profileError
-
-                  // Map profiles to players with ELO changes
-                  const updatedPlayers = currentPlayersRef.current.map(player => {
-                    const profile = profiles?.find(p => p.id === player.id)
-                    return {
-                      ...player,
-                      elo: profile?.elo || player.elo
-                    }
-                  })
-
-                  // Determine winner and loser
-                  const winner = updatedPlayers[newState.current_turn]
-                  const loser = updatedPlayers[newState.current_turn === 0 ? 1 : 0]
-
-                  // Store game end state in ref for consistent access
-                  gameEndStateRef.current = {
-                    players: updatedPlayers,
-                    gameOverInfo: {
-                      winner: {
-                        id: winner.id,
-                        name: winner.name,
-                        elo: winner.elo,
-                        originalElo: winner.originalElo,
-                        avatar_url: winner.avatar_url,
-                        score: winner.score
-                      },
-                      loser: {
-                        id: loser.id,
-                        name: loser.name,
-                        elo: loser.elo,
-                        originalElo: loser.originalElo,
-                        avatar_url: loser.avatar_url,
-                        score: loser.score
-                      },
-                      reason: 'time'
-                    }
-                  }
-
-                  // Use a timeout to ensure state updates are processed in order
-                  setTimeout(() => {
-                    if (!isSubscribed) return
-                    
-                    // Update all state at once in the next tick
-                    setPlayers(gameEndStateRef.current.players)
-                    setGameOverInfo(gameEndStateRef.current.gameOverInfo)
-                    setShowGameOverModal(true)
-                    setIsLoadingGameOver(false)
-                    
-                    console.log('[Game End] State updates completed:', {
-                      players: gameEndStateRef.current.players,
-                      gameOverInfo: gameEndStateRef.current.gameOverInfo,
-                      winner: {
-                        id: gameEndStateRef.current.gameOverInfo?.winner?.id,
-                        name: gameEndStateRef.current.gameOverInfo?.winner?.name,
-                        elo: gameEndStateRef.current.gameOverInfo?.winner?.elo,
-                        originalElo: gameEndStateRef.current.gameOverInfo?.winner?.originalElo,
-                        avatar_url: gameEndStateRef.current.gameOverInfo?.winner?.avatar_url,
-                        score: gameEndStateRef.current.gameOverInfo?.winner?.score
-                      },
-                      loser: {
-                        id: gameEndStateRef.current.gameOverInfo?.loser?.id,
-                        name: gameEndStateRef.current.gameOverInfo?.loser?.name,
-                        elo: gameEndStateRef.current.gameOverInfo?.loser?.elo,
-                        originalElo: gameEndStateRef.current.gameOverInfo?.loser?.originalElo,
-                        avatar_url: gameEndStateRef.current.gameOverInfo?.loser?.avatar_url,
-                        score: gameEndStateRef.current.gameOverInfo?.loser?.score
-                      }
-                    })
-                  }, 0)
-                } catch (error) {
-                  console.error('[Game End] Error handling game end:', error)
-                  setIsLoadingGameOver(false)
-                }
+              if (newState.status === 'finished' && !currentShowGameOverModal) {
+                setIsLoadingGameOver(true);
               }
             },
-            onGameWordAdded: (payload: RealtimePostgresChangesPayload<GameWord>) => {
-              if (!payload.new || !('word' in payload.new)) return
+            onTimerUpdate: (p1Time, p2Time) => {
+              setPlayer1Time(p1Time);
+              setPlayer2Time(p2Time);
+            },
+            onPresenceSync: (state) => {
+              const onlineIds = new Set<string>();
+              Object.entries(state).forEach(([_, presences]) => {
+                presences.forEach((presence: any) => {
+                  if (presence.user_id) {
+                    onlineIds.add(presence.user_id);
+                  }
+                });
+              });
+              setOnlinePlayers(onlineIds);
+            },
+            onGameWordAdded: (payload) => {
+              const newWord = payload.new as GameWord;
+              if (!newWord) return;
 
-              const newWord = payload.new as GameWord
               // Add word to the list
               setWords(prev => {
-                if (prev.some(w => w.word === newWord.word)) return prev
+                if (prev.some(w => w.word === newWord.word)) return prev;
 
                 const wordCard: WordCard = {
                   word: newWord.word,
-                  player: players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+                  player: currentPlayers.find(p => p.id === newWord.player_id)?.name || 'Unknown',
                   timestamp: Date.now(),
                   isInvalid: !newWord.is_valid,
                   score: newWord.score,
@@ -598,202 +453,31 @@ export function GameClient({ lobbyId }: GameClientProps) {
                     definition: newWord.definition,
                     phonetics: newWord.phonetics
                   }
-                }
+                };
 
-                return [...prev, wordCard]
-              })
+                return [...prev, wordCard];
+              });
 
               // Update game started state
-              setGameStarted(true)
+              setGameStarted(true);
             }
-          }
-        )
+          },
+          currentGetBannedLetters
+        );
 
-        await manager.initialize()
-        setSubscriptionManager(manager)
+        await manager.initialize();
+        setSubscriptionManager(manager);
       } catch (error) {
-        console.error('Error initializing subscriptions:', error)
+        console.error('Error setting up subscriptions:', error);
       }
-    }
+    };
 
-    initializeSubscriptions()
+    setupSubscriptions();
 
     return () => {
-      isSubscribed = false
-      subscriptionManager?.cleanup()
-    }
-  }, [lobbyId, user, showGameOverModal, players])
-
-  // Timer effect - host updates game state every second
-  useEffect(() => {
-    if (!lobbyId || !user || !gameStarted || !words.length) return;
-
-    let interval: NodeJS.Timeout;
-    let isHostChecked = false;
-    let isHost = false;
-    let lastKnownState: {
-      currentTurn: number;
-      player1Time: number;
-      player2Time: number;
-      lastMoveAt: string;
-    } | null = null;
-
-    const checkHostAndSync = async () => {
-      if (!isHostChecked) {
-        const { data: lobbyData } = await supabase
-          .from('lobbies')
-          .select('host_id')
-          .eq('id', lobbyId)
-          .single();
-        
-        isHost = lobbyData?.host_id === user.id;
-        isHostChecked = true;
-
-        if (!isHost) return false;
-
-        const { data: gameState } = await supabase
-          .from('game_state')
-          .select('last_move_at, current_turn, player1_time, player2_time')
-          .eq('lobby_id', lobbyId)
-          .single();
-
-        if (gameState) {
-          lastKnownState = {
-            currentTurn: gameState.current_turn,
-            player1Time: gameState.player1_time,
-            player2Time: gameState.player2_time,
-            lastMoveAt: gameState.last_move_at
-          };
-        }
-      }
-      return isHost;
+      subscriptionManager?.cleanup();
     };
-
-    const startTimer = async () => {
-      const shouldContinue = await checkHostAndSync();
-      if (!shouldContinue) return;
-
-      interval = setInterval(async () => {
-        const { data: currentState } = await supabase
-          .from('game_state')
-          .select('current_turn, player1_time, player2_time, last_move_at, status')
-          .eq('lobby_id', lobbyId)
-          .single();
-          
-        if (!currentState || currentState.status === 'finished') {
-          if (interval) clearInterval(interval);
-          return;
-        }
-
-        if (!lastKnownState) {
-          lastKnownState = {
-            currentTurn: currentState.current_turn,
-            player1Time: currentState.player1_time,
-            player2Time: currentState.player2_time,
-            lastMoveAt: currentState.last_move_at
-          };
-          return;
-        }
-
-        const isNewMove = new Date(currentState.last_move_at).getTime() > new Date(lastKnownState.lastMoveAt).getTime();
-
-        if (isNewMove) {
-          lastKnownState = {
-            currentTurn: currentState.current_turn,
-            player1Time: currentState.player1_time,
-            player2Time: currentState.player2_time,
-            lastMoveAt: currentState.last_move_at
-          };
-          return;
-        }
-
-        const currentPlayerTime = lastKnownState.currentTurn === 0 
-          ? lastKnownState.player1Time 
-          : lastKnownState.player2Time;
-
-        if (currentPlayerTime <= 0) {
-          console.log('[Game End] Timer reached zero', {
-            isHost,
-            currentTurn: lastKnownState.currentTurn,
-            player1Time: lastKnownState.player1Time,
-            player2Time: lastKnownState.player2Time
-          });
-
-          if (interval) clearInterval(interval);
-
-          // Only host calls the handle_game_end function
-          if (isHost) {
-            console.log('[Game End] Host is calling handle_game_end');
-            try {
-              const { data: { session } } = await supabase.auth.getSession();
-              console.log('[Game End] Got session token:', !!session?.access_token);
-              
-              console.log('[Game End] Making Edge Function call with payload:', {
-                lobby_id: lobbyId,
-                game_status: 'finished',
-                reason: 'time'
-              });
-              
-              const response = await supabase.functions.invoke('handle_game_end', {
-                body: {
-                  lobby_id: lobbyId,
-                  game_status: 'finished',
-                  reason: 'time'
-                },
-                headers: {
-                  Authorization: `Bearer ${session?.access_token}`
-                }
-              });
-
-              console.log('[Game End] Edge Function response:', {
-                error: response.error,
-                data: response.data,
-                status: response.error ? 'error' : 'success'
-              });
-
-              if (response.error) {
-                console.error('[Game End] Error calling handle_game_end:', response.error);
-              }
-            } catch (error) {
-              console.error('[Game End] Exception in handle_game_end call:', error);
-            }
-          } else {
-            console.log('[Game End] Non-host client waiting for game state update');
-          }
-          
-          return;
-        }
-
-        const newTime = Math.max(0, currentPlayerTime - 1000);
-        
-        lastKnownState = {
-          currentTurn: lastKnownState.currentTurn,
-          lastMoveAt: lastKnownState.lastMoveAt,
-          player1Time: lastKnownState.currentTurn === 0 ? newTime : lastKnownState.player1Time,
-          player2Time: lastKnownState.currentTurn === 1 ? newTime : lastKnownState.player2Time
-        };
-
-        const { error: stateError } = await supabase
-          .from('game_state')
-          .update({
-            [lastKnownState.currentTurn === 0 ? 'player1_time' : 'player2_time']: newTime,
-            updated_at: new Date().toISOString(),
-            updated_by: user.id
-          })
-          .eq('lobby_id', lobbyId);
-
-        if (stateError) {
-          console.error('Error updating game time:', stateError);
-        }
-      }, 1000);
-    };
-
-    startTimer();
-
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [lobbyId, user?.id, gameStarted, words.length, user]);
+  }, [lobbyId, user?.id]); // Only depend on the essential mounting dependencies
 
   // Basic word submission handler
   const handleSubmit = async (e: React.FormEvent) => {
