@@ -79,33 +79,43 @@ export class GameSubscriptionManager {
   }
 
   private startTimerUpdates() {
-    if (!this.isHost || this.timerInterval) return
+    if (!this.isHost || this.timerInterval) return;
 
     this.timerInterval = setInterval(async () => {
-      if (!this.lastKnownState || this.lastKnownState.status !== 'active') return
+      if (!this.lastKnownState || this.lastKnownState.status !== 'active') return;
 
       const currentPlayerTime = this.lastKnownState.currentTurn === 0 
         ? this.lastKnownState.player1Time 
-        : this.lastKnownState.player2Time
+        : this.lastKnownState.player2Time;
 
       if (currentPlayerTime <= 0) {
-        if (this.timerInterval) clearInterval(this.timerInterval)
-        return
+        if (this.timerInterval) clearInterval(this.timerInterval);
+        return;
       }
 
-      const newTime = Math.max(0, currentPlayerTime - 1000)
+      const newTime = Math.max(0, currentPlayerTime - 1000);
       
       const newState = {
         ...this.lastKnownState,
         player1Time: this.lastKnownState.currentTurn === 0 ? newTime : this.lastKnownState.player1Time,
         player2Time: this.lastKnownState.currentTurn === 1 ? newTime : this.lastKnownState.player2Time
-      }
+      };
 
       // Update last known state
-      this.lastKnownState = newState
+      this.lastKnownState = newState;
+
+      // Broadcast timer update to all clients through the channel
+      await this.channel?.send({
+        type: 'broadcast',
+        event: 'timer_update',
+        payload: {
+          player1Time: newState.player1Time,
+          player2Time: newState.player2Time
+        }
+      });
 
       // Notify callback of timer update
-      this.callbacks.onTimerUpdate?.(newState.player1Time, newState.player2Time)
+      this.callbacks.onTimerUpdate?.(newState.player1Time, newState.player2Time);
 
       // Only update database every 5 seconds or when timer reaches 0
       if (newTime === 0 || newTime % 5000 === 0) {
@@ -116,19 +126,19 @@ export class GameSubscriptionManager {
             updated_at: new Date().toISOString(),
             updated_by: this.userId
           })
-          .eq('lobby_id', this.lobbyId)
+          .eq('lobby_id', this.lobbyId);
 
         if (stateError) {
-          console.error('Error updating game time:', stateError)
+          console.error('Error updating game time:', stateError);
         }
       }
-    }, 1000)
+    }, 1000);
   }
 
   async initialize() {
     if (this.channel) {
-      console.warn('Channel already initialized')
-      return
+      console.warn('Channel already initialized');
+      return;
     }
 
     // If host, initialize game state immediately
@@ -139,9 +149,9 @@ export class GameSubscriptionManager {
           .from('lobbies')
           .select('game_config')
           .eq('id', this.lobbyId)
-          .single()
+          .single();
 
-        const baseTime = lobbyData?.game_config?.base_time || 180000
+        const baseTime = lobbyData?.game_config?.base_time || 180000;
 
         // Create or update game state
         const { data: gameState, error: stateError } = await supabase
@@ -162,11 +172,11 @@ export class GameSubscriptionManager {
             onConflict: 'lobby_id'
           })
           .select()
-          .single()
+          .single();
 
         if (stateError) {
-          console.error('Error initializing game state:', stateError)
-          return
+          console.error('Error initializing game state:', stateError);
+          return;
         }
 
         if (gameState) {
@@ -176,10 +186,10 @@ export class GameSubscriptionManager {
             player2Time: gameState.player2_time,
             lastMoveAt: gameState.last_move_at,
             status: gameState.status as 'active' | 'paused' | 'finished'
-          }
+          };
         }
       } catch (error) {
-        console.error('Error in game state initialization:', error)
+        console.error('Error in game state initialization:', error);
       }
     }
 
@@ -189,21 +199,27 @@ export class GameSubscriptionManager {
           key: this.userId,
         },
       },
-    })
+    });
 
     // Set up presence handlers
     this.channel
       .on('presence', { event: 'sync' }, async () => {
-        if (!this.channel) return
-        const state = this.channel.presenceState()
-        this.callbacks.onPresenceSync?.(state)
+        if (!this.channel) return;
+        const state = this.channel.presenceState();
+        this.callbacks.onPresenceSync?.(state);
       })
       .on('presence', { event: 'join' }, ({ key, newPresences }) => {
-        this.callbacks.onPlayerJoin?.({ key, newPresences: newPresences as unknown as PresenceState[] })
+        this.callbacks.onPlayerJoin?.({ key, newPresences: newPresences as unknown as PresenceState[] });
       })
       .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
-        this.callbacks.onPlayerLeave?.({ key, leftPresences: leftPresences as unknown as PresenceState[] })
+        this.callbacks.onPlayerLeave?.({ key, leftPresences: leftPresences as unknown as PresenceState[] });
       })
+      // Add broadcast handler for timer updates
+      .on('broadcast', { event: 'timer_update' }, (payload) => {
+        if (payload.payload) {
+          this.callbacks.onTimerUpdate?.(payload.payload.player1Time, payload.payload.player2Time);
+        }
+      });
 
     // Set up game state subscription
     this.channel.on(
@@ -215,7 +231,7 @@ export class GameSubscriptionManager {
         filter: `lobby_id=eq.${this.lobbyId}`
       },
       (payload) => {
-        const newState = (payload as RealtimePostgresChangesPayload<GameState>).new as GameState
+        const newState = (payload as RealtimePostgresChangesPayload<GameState>).new as GameState;
         
         // Update last known state for timer management
         if (newState && newState.status) {
@@ -225,12 +241,12 @@ export class GameSubscriptionManager {
             player2Time: newState.player2_time,
             lastMoveAt: newState.last_move_at,
             status: newState.status
-          }
+          };
         }
 
-        this.callbacks.onGameStateChange?.(payload as RealtimePostgresChangesPayload<GameState>)
+        this.callbacks.onGameStateChange?.(payload as RealtimePostgresChangesPayload<GameState>);
       }
-    )
+    );
 
     // Set up game words subscription
     this.channel.on(
@@ -242,9 +258,9 @@ export class GameSubscriptionManager {
         filter: `lobby_id=eq.${this.lobbyId}`
       },
       (payload) => {
-        this.callbacks.onGameWordAdded?.(payload as RealtimePostgresChangesPayload<GameWord>)
+        this.callbacks.onGameWordAdded?.(payload as RealtimePostgresChangesPayload<GameWord>);
       }
-    )
+    );
 
     // Subscribe and track presence
     await this.channel.subscribe(async (status) => {
@@ -252,14 +268,14 @@ export class GameSubscriptionManager {
         await this.channel?.track({
           user_id: this.userId,
           online_at: new Date().toISOString(),
-        })
+        });
         
         // Start timer updates after successful subscription
         if (this.isHost) {
-          this.startTimerUpdates()
+          this.startTimerUpdates();
         }
       }
-    })
+    });
   }
 
   cleanup() {
