@@ -297,7 +297,9 @@ export class GameSubscriptionManager {
             this.lastKnownState = {
               currentTurn,
               baseTime,
-              status: newState.status
+              status: newState.status,
+              lastCalculation: Date.now(),
+              animationFrameId: undefined
             };
 
             // Update timers when game state changes
@@ -318,8 +320,8 @@ export class GameSubscriptionManager {
           filter: `lobby_id=eq.${this.lobbyId}`
         },
         async (payload: RealtimePostgresChangesPayload<GameWord>) => {
-          const newWord = payload.new;
-          if (newWord) {
+          const newWord = payload.new as GameWord;
+          if (newWord && 'created_at' in newWord && 'player_id' in newWord) {
             this._cachedWords.push({
               created_at: newWord.created_at,
               player_id: newWord.player_id
