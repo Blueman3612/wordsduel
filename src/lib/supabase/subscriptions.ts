@@ -131,42 +131,36 @@ export class GameSubscriptionManager {
 
     // Get cached words (we'll update this on word subscription)
     const words = this._cachedWords || [];
-    const timeIncrement = this._timeIncrement || 5000;
 
+    // If no words played, return full time for both players
     if (words.length === 0) {
-      // If no words played, only current turn's time decrements
-      const elapsedSinceStart = now - this._gameStartTime;
-      if (this.lastKnownState.currentTurn === 0) {
-        player1Time = Math.max(0, player1Time - elapsedSinceStart);
-      } else {
-        player2Time = Math.max(0, player2Time - elapsedSinceStart);
-      }
       return { player1Time, player2Time };
     }
 
-    // Process each word to calculate time used and increments
-    for (let i = 0; i < words.length; i++) {
-      const currentWord = words[i];
-      const prevWord = i > 0 ? words[i - 1] : null;
-      const currentTimestamp = new Date(currentWord.created_at).getTime();
-      
-      if (prevWord) {
-        const prevTimestamp = new Date(prevWord.created_at).getTime();
-        const timeUsed = currentTimestamp - prevTimestamp;
-        
-        // Subtract time from the player who just moved
-        if (prevWord.player_id === words[0].player_id) { // Player 1
-          player1Time = Math.max(0, player1Time - timeUsed);
-        } else {
-          player2Time = Math.max(0, player2Time - timeUsed);
-        }
-      }
+    const timeIncrement = this._timeIncrement || 5000;
+    const firstWord = words[0];
+    const player1Id = firstWord.player_id; // Host/first player's ID
 
-      // Add increment for the player who just played
-      if (currentWord.player_id === words[0].player_id) { // Player 1
-        player1Time += timeIncrement;
+    // Count words played by each player for increments
+    const player1Words = words.filter(w => w.player_id === player1Id);
+    const player2Words = words.filter(w => w.player_id !== player1Id);
+
+    // Add time increments
+    player1Time += timeIncrement * player1Words.length;
+    player2Time += timeIncrement * player2Words.length;
+
+    // Process time used between moves
+    for (let i = 0; i < words.length - 1; i++) {
+      const currentWord = words[i];
+      const nextWord = words[i + 1];
+      const timeUsed = new Date(nextWord.created_at).getTime() - new Date(currentWord.created_at).getTime();
+
+      // Subtract time from the player whose turn it WAS (opposite of who played)
+      // If player1 played currentWord, it means player2 was thinking during this time
+      if (currentWord.player_id === player1Id) {
+        player2Time = Math.max(0, player2Time - timeUsed);
       } else {
-        player2Time += timeIncrement;
+        player1Time = Math.max(0, player1Time - timeUsed);
       }
     }
 
@@ -174,12 +168,13 @@ export class GameSubscriptionManager {
     const lastWord = words[words.length - 1];
     const lastMoveTime = new Date(lastWord.created_at).getTime();
     const elapsedSinceLastMove = now - lastMoveTime;
-    
-    // Subtract from current player's time
-    if (this.lastKnownState.currentTurn === 0) {
-      player1Time = Math.max(0, player1Time - elapsedSinceLastMove);
-    } else {
+
+    // Subtract elapsed time from the player whose turn it currently is
+    // If player1 played last, then player2 is currently thinking
+    if (lastWord.player_id === player1Id) {
       player2Time = Math.max(0, player2Time - elapsedSinceLastMove);
+    } else {
+      player1Time = Math.max(0, player1Time - elapsedSinceLastMove);
     }
 
     return { player1Time, player2Time };
