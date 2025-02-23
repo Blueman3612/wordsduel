@@ -30,6 +30,7 @@ interface GameWord {
   part_of_speech?: string
   definition?: string
   phonetics?: string
+  created_at: string
 }
 
 interface PresenceState {
@@ -39,10 +40,10 @@ interface PresenceState {
 
 type GameStateInternal = {
   currentTurn: number
-  player1Time: number
-  player2Time: number
-  lastMoveAt: string
+  baseTime: number
   status: 'active' | 'paused' | 'finished'
+  lastCalculation: number // Track when we last calculated time
+  animationFrameId?: number // Track animation frame
 }
 
 type SubscriptionCallbacks = {
@@ -60,7 +61,6 @@ export class GameSubscriptionManager {
   private userId: string
   private isHost: boolean
   private callbacks: SubscriptionCallbacks
-  private timerInterval: NodeJS.Timeout | null = null
   private lastKnownState: GameStateInternal | null = null
   private getInitialBannedLetters: () => string[]
 
@@ -119,129 +119,118 @@ export class GameSubscriptionManager {
     }
   }
 
-  private async synchronizeTimers(): Promise<{ player1Time: number; player2Time: number; currentTurn: number }> {
-    try {
-      // Get the last word played and the game state
-      const [{ data: words }, { data: gameState }] = await Promise.all([
-        supabase
-          .from('game_words')
-          .select('created_at, player_id')
-          .eq('lobby_id', this.lobbyId)
-          .order('created_at', { ascending: false })
-          .limit(1),
-        supabase
-          .from('game_state')
-          .select('player1_time, player2_time, last_move_at')
-          .eq('lobby_id', this.lobbyId)
-          .single()
-      ]);
+  // Calculate time remaining based purely on timestamps
+  private calculateTimeRemaining(now: number = Date.now()): { player1Time: number; player2Time: number } {
+    if (!this.lastKnownState) {
+      return { player1Time: 0, player2Time: 0 };
+    }
 
-      if (!gameState) {
-        console.error('No game state found during timer sync');
-        return { player1Time: 0, player2Time: 0, currentTurn: 0 };
-      }
+    // Start with base time for both players
+    let player1Time = this.lastKnownState.baseTime;
+    let player2Time = this.lastKnownState.baseTime;
 
-      // Get current turn based on last word
-      const currentTurn = await this.determineCurrentTurn();
+    // Get cached words (we'll update this on word subscription)
+    const words = this._cachedWords || [];
+    const timeIncrement = this._timeIncrement || 5000;
 
-      // If no words played, return the base times
-      if (!words || words.length === 0) {
-        return {
-          player1Time: gameState.player1_time,
-          player2Time: gameState.player2_time,
-          currentTurn
-        };
-      }
-
-      // Calculate time elapsed since last move
-      const lastMoveTime = new Date(words[0].created_at).getTime();
-      const currentTime = Date.now();
-      const elapsedTime = currentTime - lastMoveTime;
-
-      // Get the stored times from game state
-      const times = {
-        player1Time: gameState.player1_time,
-        player2Time: gameState.player2_time,
-        currentTurn
-      };
-
-      // Only subtract elapsed time from the current player's timer
-      if (currentTurn === 0) {
-        times.player1Time = Math.max(0, times.player1Time - elapsedTime);
+    if (words.length === 0) {
+      // If no words played, only current turn's time decrements
+      const elapsedSinceStart = now - this._gameStartTime;
+      if (this.lastKnownState.currentTurn === 0) {
+        player1Time = Math.max(0, player1Time - elapsedSinceStart);
       } else {
-        times.player2Time = Math.max(0, times.player2Time - elapsedTime);
+        player2Time = Math.max(0, player2Time - elapsedSinceStart);
+      }
+      return { player1Time, player2Time };
+    }
+
+    // Process each word to calculate time used and increments
+    for (let i = 0; i < words.length; i++) {
+      const currentWord = words[i];
+      const prevWord = i > 0 ? words[i - 1] : null;
+      const currentTimestamp = new Date(currentWord.created_at).getTime();
+      
+      if (prevWord) {
+        const prevTimestamp = new Date(prevWord.created_at).getTime();
+        const timeUsed = currentTimestamp - prevTimestamp;
+        
+        // Subtract time from the player who just moved
+        if (prevWord.player_id === words[0].player_id) { // Player 1
+          player1Time = Math.max(0, player1Time - timeUsed);
+        } else {
+          player2Time = Math.max(0, player2Time - timeUsed);
+        }
       }
 
-      return times;
-    } catch (error) {
-      console.error('Error synchronizing timers:', error);
-      return this.lastKnownState ? {
-        player1Time: this.lastKnownState.player1Time,
-        player2Time: this.lastKnownState.player2Time,
-        currentTurn: this.lastKnownState.currentTurn
-      } : { player1Time: 0, player2Time: 0, currentTurn: 0 };
+      // Add increment for the player who just played
+      if (currentWord.player_id === words[0].player_id) { // Player 1
+        player1Time += timeIncrement;
+      } else {
+        player2Time += timeIncrement;
+      }
     }
+
+    // Calculate time since last move for current player
+    const lastWord = words[words.length - 1];
+    const lastMoveTime = new Date(lastWord.created_at).getTime();
+    const elapsedSinceLastMove = now - lastMoveTime;
+    
+    // Subtract from current player's time
+    if (this.lastKnownState.currentTurn === 0) {
+      player1Time = Math.max(0, player1Time - elapsedSinceLastMove);
+    } else {
+      player2Time = Math.max(0, player2Time - elapsedSinceLastMove);
+    }
+
+    return { player1Time, player2Time };
   }
 
-  private startTimerUpdates() {
-    // Clear any existing timer first
-    if (this.timerInterval) {
-      clearInterval(this.timerInterval);
-      this.timerInterval = null;
+  private _cachedWords: Array<{ created_at: string; player_id: string }> = [];
+  private _timeIncrement: number = 5000;
+  private _gameStartTime: number = Date.now();
+
+  private updateTimers = () => {
+    if (!this.lastKnownState || this.lastKnownState.status !== 'active') {
+      if (this.lastKnownState?.animationFrameId) {
+        cancelAnimationFrame(this.lastKnownState.animationFrameId);
+      }
+      return;
     }
 
-    // Start a local timer that just counts down based on the last sync
-    this.timerInterval = setInterval(() => {
-      if (!this.lastKnownState || this.lastKnownState.status !== 'active') {
-        if (this.timerInterval) clearInterval(this.timerInterval);
-        return;
-      }
+    const now = Date.now();
+    const { player1Time, player2Time } = this.calculateTimeRemaining(now);
+    
+    // Update UI
+    this.callbacks.onTimerUpdate?.(player1Time, player2Time);
 
-      const currentTime = this.lastKnownState.currentTurn === 0 
-        ? this.lastKnownState.player1Time 
-        : this.lastKnownState.player2Time;
+    // Check for game over
+    if ((player1Time <= 0 || player2Time <= 0) && this.lastKnownState.status === 'active') {
+      this.endGame();
+      return;
+    }
 
-      if (currentTime <= 0) {
-        if (this.timerInterval) clearInterval(this.timerInterval);
-        return;
-      }
-
-      // Just decrement the appropriate timer locally
-      const newTime = Math.max(0, currentTime - 1000);
-      const newState = {
-        ...this.lastKnownState,
-        player1Time: this.lastKnownState.currentTurn === 0 ? newTime : this.lastKnownState.player1Time,
-        player2Time: this.lastKnownState.currentTurn === 1 ? newTime : this.lastKnownState.player2Time
-      };
-
-      this.lastKnownState = newState;
-      this.callbacks.onTimerUpdate?.(newState.player1Time, newState.player2Time);
-    }, 1000);
+    // Schedule next update
+    this.lastKnownState.animationFrameId = requestAnimationFrame(this.updateTimers);
   }
 
-  // Modify handleTurnChange to be more precise
-  private handleTurnChange(newState: GameState) {
-    // Always clear existing timer first
-    if (this.timerInterval) {
-      clearInterval(this.timerInterval);
-      this.timerInterval = null;
-    }
+  private async endGame() {
+    // Attempt atomic update to end game
+    const { error } = await supabase
+      .from('game_state')
+      .update({ 
+        status: 'finished',
+        updated_at: new Date().toISOString(),
+        updated_by: this.userId
+      })
+      .eq('lobby_id', this.lobbyId)
+      .eq('status', 'active'); // Only update if still active
 
-    // Synchronize timers and update state
-    this.synchronizeTimers().then(({ player1Time, player2Time, currentTurn }) => {
-      this.lastKnownState = {
-        currentTurn,
-        player1Time,
-        player2Time,
-        lastMoveAt: newState.last_move_at,
-        status: newState.status as 'active' | 'paused' | 'finished'
-      };
-
-      // Only host restarts timer if game is active
-      if (this.isHost && newState.status === 'active') {
-        this.startTimerUpdates();
+    if (!error) {
+      console.log('Game ended due to time expiration');
+      if (this.lastKnownState?.animationFrameId) {
+        cancelAnimationFrame(this.lastKnownState.animationFrameId);
       }
-    });
+    }
   }
 
   async initialize() {
@@ -251,23 +240,37 @@ export class GameSubscriptionManager {
     }
 
     try {
-      // First set up the channel
-      this.channel = supabase.channel(`game_room:${this.lobbyId}`, {
-        config: {
-          presence: {
-            key: this.userId,
-          },
-        },
-      });
+      // Get initial configuration
+      const [{ data: lobbyData }, { data: words }] = await Promise.all([
+        supabase
+          .from('lobbies')
+          .select('game_config')
+          .eq('id', this.lobbyId)
+          .single(),
+        supabase
+          .from('game_words')
+          .select('created_at, player_id')
+          .eq('lobby_id', this.lobbyId)
+          .order('created_at', { ascending: true })
+      ]);
 
-      // Get profile data first
+      // Store configuration
+      const baseTime = lobbyData?.game_config?.base_time || 180000;
+      this._timeIncrement = lobbyData?.game_config?.increment || 5000;
+      this._cachedWords = words || [];
+      this._gameStartTime = Date.now();
+
+      // Set up the channel
+      this.channel = supabase.channel(`game_room:${this.lobbyId}`);
+
+      // Get profile data
       const { data: profile } = await supabase
         .from('profiles')
         .select('display_name, avatar_url')
         .eq('id', this.userId)
         .maybeSingle();
 
-      // Set up all channel handlers
+      // Set up presence handlers (keep existing presence code)
       this.channel
         .on('presence', { event: 'sync' }, async () => {
           if (!this.channel) return;
@@ -281,7 +284,7 @@ export class GameSubscriptionManager {
           this.callbacks.onPlayerLeave?.({ key, leftPresences: leftPresences as unknown as PresenceState[] });
         });
 
-      // Set up game state subscription with turn change handling
+      // Set up game state subscription
       this.channel.on(
         'postgres_changes',
         {
@@ -292,32 +295,25 @@ export class GameSubscriptionManager {
         },
         async (payload) => {
           const newState = (payload as RealtimePostgresChangesPayload<GameState>).new as GameState;
-          const oldState = (payload as RealtimePostgresChangesPayload<GameState>).old as GameState;
           
           if (newState && newState.status) {
-            // Determine current turn from game_words instead of relying on game_state
             const currentTurn = await this.determineCurrentTurn();
-            newState.current_turn = currentTurn;
+            
+            this.lastKnownState = {
+              currentTurn,
+              baseTime,
+              status: newState.status
+            };
 
-            // Check if turn has changed
-            if (oldState && currentTurn !== oldState.current_turn) {
-              this.handleTurnChange(newState);
-            } else {
-              this.lastKnownState = {
-                currentTurn: currentTurn,
-                player1Time: newState.player1_time,
-                player2Time: newState.player2_time,
-                lastMoveAt: newState.last_move_at,
-                status: newState.status
-              };
-            }
+            // Update timers when game state changes
+            this.updateTimers();
           }
 
           this.callbacks.onGameStateChange?.(payload as RealtimePostgresChangesPayload<GameState>);
         }
       );
 
-      // Set up game words subscription
+      // Update game words cache on new words
       this.channel.on(
         'postgres_changes',
         {
@@ -326,28 +322,21 @@ export class GameSubscriptionManager {
           table: 'game_words',
           filter: `lobby_id=eq.${this.lobbyId}`
         },
-        async (payload) => {
-          // When a new word is played, sync with server
-          if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-            this.timerInterval = null;
+        async (payload: RealtimePostgresChangesPayload<GameWord>) => {
+          const newWord = payload.new;
+          if (newWord) {
+            this._cachedWords.push({
+              created_at: newWord.created_at,
+              player_id: newWord.player_id
+            });
           }
 
-          const { player1Time, player2Time, currentTurn } = await this.synchronizeTimers();
-          
+          const currentTurn = await this.determineCurrentTurn();
           if (this.lastKnownState) {
-            this.lastKnownState = {
-              ...this.lastKnownState,
-              currentTurn,
-              player1Time,
-              player2Time
-            };
+            this.lastKnownState.currentTurn = currentTurn;
           }
 
-          // Start local timer
-          this.startTimerUpdates();
-
-          this.callbacks.onGameWordAdded?.(payload as RealtimePostgresChangesPayload<GameWord>);
+          this.callbacks.onGameWordAdded?.(payload);
         }
       );
 
@@ -366,89 +355,46 @@ export class GameSubscriptionManager {
         });
       });
 
-      // After channel is fully subscribed, handle game state
-      const { data: existingState } = await supabase
-        .from('game_state')
-        .select('*')
-        .eq('lobby_id', this.lobbyId)
-        .maybeSingle();
-
-      // If we're the host and no state exists, create it
-      if (!existingState && this.isHost) {
-        const { data: lobbyData } = await supabase
-          .from('lobbies')
-          .select('game_config')
-          .eq('id', this.lobbyId)
-          .single();
-
-        const baseTime = lobbyData?.game_config?.base_time || 180000;
-        
-        // Determine the current turn based on game_words
-        const currentTurn = await this.determineCurrentTurn();
-
-        // Try to create game state with a unique constraint check
-        const { data: newState, error } = await supabase
+      // Initialize game state if host
+      if (this.isHost) {
+        const { data: existingState } = await supabase
           .from('game_state')
-          .insert({
-            lobby_id: this.lobbyId,
-            current_turn: currentTurn, // Use the determined turn
-            player1_time: baseTime,
-            player2_time: baseTime,
-            player1_score: 0,
-            player2_score: 0,
-            status: 'active',
-            banned_letters: this.getInitialBannedLetters(),
-            last_move_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            updated_by: this.userId
-          })
-          .select()
-          .single();
+          .select('*')
+          .eq('lobby_id', this.lobbyId)
+          .maybeSingle();
 
-        // If insert failed, try to get existing state one more time
-        if (error) {
-          const { data: retryState } = await supabase
+        if (!existingState) {
+          const currentTurn = await this.determineCurrentTurn();
+
+          await supabase
             .from('game_state')
-            .select('*')
-            .eq('lobby_id', this.lobbyId)
+            .insert({
+              lobby_id: this.lobbyId,
+              current_turn: currentTurn,
+              status: 'active',
+              banned_letters: this.getInitialBannedLetters(),
+              last_move_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              updated_by: this.userId
+            })
+            .select()
             .single();
-
-          if (retryState) {
-            const currentTurn = await this.determineCurrentTurn();
-            this.lastKnownState = {
-              currentTurn: currentTurn,
-              player1Time: retryState.player1_time,
-              player2Time: retryState.player2_time,
-              lastMoveAt: retryState.last_move_at,
-              status: retryState.status as 'active' | 'paused' | 'finished'
-            };
-          }
-        } else if (newState) {
-          this.lastKnownState = {
-            currentTurn: currentTurn,
-            player1Time: newState.player1_time,
-            player2Time: newState.player2_time,
-            lastMoveAt: newState.last_move_at,
-            status: newState.status as 'active' | 'paused' | 'finished'
-          };
         }
-      } else if (existingState) {
-        const currentTurn = await this.determineCurrentTurn();
-        this.lastKnownState = {
-          currentTurn: currentTurn,
-          player1Time: existingState.player1_time,
-          player2Time: existingState.player2_time,
-          lastMoveAt: existingState.last_move_at,
-          status: existingState.status as 'active' | 'paused' | 'finished'
-        };
       }
 
-      // Start timer updates after everything is initialized
-      if (this.isHost && this.lastKnownState?.status === 'active') {
-        setTimeout(() => {
-          this.startTimerUpdates();
-        }, 1000);
-      }
+      // Initialize state and start animation
+      const currentTurn = await this.determineCurrentTurn();
+      const initialState: GameStateInternal = {
+        currentTurn,
+        baseTime,
+        status: 'active',
+        lastCalculation: Date.now(),
+        animationFrameId: undefined
+      };
+      this.lastKnownState = initialState;
+
+      // Start smooth animation
+      requestAnimationFrame(this.updateTimers);
 
     } catch (error) {
       console.error('Error in subscription initialization:', error);
@@ -456,15 +402,13 @@ export class GameSubscriptionManager {
   }
 
   cleanup() {
-    if (this.timerInterval) {
-      clearInterval(this.timerInterval)
-      this.timerInterval = null
+    if (this.lastKnownState?.animationFrameId) {
+      cancelAnimationFrame(this.lastKnownState.animationFrameId);
     }
-
     if (this.channel) {
-      this.channel.untrack()
-      this.channel.unsubscribe()
-      this.channel = null
+      this.channel.untrack();
+      this.channel.unsubscribe();
+      this.channel = null;
     }
   }
 } 
