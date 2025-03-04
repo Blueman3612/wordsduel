@@ -245,7 +245,7 @@ export default function HomePage() {
       // Look for an available public lobby
       const { data: availableLobbies, error: availableError } = await supabase
         .from('lobbies')
-        .select('id, max_players')
+        .select('id, max_players, game_config, host_id')
         .eq('status', 'waiting')
         .is('password', null)
         .order('created_at', { ascending: true })
@@ -263,18 +263,47 @@ export default function HomePage() {
 
         if (countError) throw countError
 
-        // Join this lobby
-        const { error: joinError } = await supabase
-          .from('lobby_members')
-          .insert({
-            lobby_id: availableLobby.id,
-            user_id: user.id
-          })
-
-        if (joinError) throw joinError
-
-        // Only redirect to game if the lobby is now full
+        // If this makes the lobby full, create game state and redirect to game
         if (count && count + 1 >= availableLobby.max_players) {
+          const baseTime = availableLobby.game_config.base_time || 180000 // 3 minutes in ms
+
+          // Get initial banned letters
+          const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
+          const vowels = ['A', 'E', 'I', 'O', 'U']
+          const consonants = alphabet.filter(letter => !vowels.includes(letter))
+          
+          // Randomly select 3 consonants and 1 vowel
+          const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5)
+          const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5)
+          const initialBannedLetters = [...shuffledConsonants.slice(0, 3), shuffledVowels[0]]
+
+          // First update lobby status to in_progress to prevent subscription redirect
+          const { error: updateError } = await supabase
+            .from('lobbies')
+            .update({ status: 'in_progress' })
+            .eq('id', availableLobby.id)
+
+          if (updateError) throw updateError
+
+          // Then create the game state
+          const { error: stateError } = await supabase
+            .from('game_state')
+            .insert({
+              lobby_id: availableLobby.id,
+              current_turn: 0,
+              player1_time: baseTime,
+              player2_time: baseTime,
+              player1_score: 0,
+              player2_score: 0,
+              status: 'active',
+              banned_letters: initialBannedLetters,
+              last_move_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              updated_by: availableLobby.host_id
+            })
+
+          if (stateError) throw stateError
+
           router.push(`/game/${availableLobby.id}`)
         } else {
           router.push('/lobbies')

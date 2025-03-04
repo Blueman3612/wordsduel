@@ -171,6 +171,8 @@ export default function LobbiesPage() {
               return
             }
 
+            // Only redirect if we find a waiting lobby that's full
+            // This prevents redirect loops when we're already transitioning to the game
             if (lobbies && lobbies.length > 0) {
               const lobby = lobbies[0]
               const { count } = await supabase
@@ -294,16 +296,83 @@ export default function LobbiesPage() {
 
     try {
       setIsJoining(true)
-      const { error } = await supabase
+
+      // First check if this would be the second player (making the lobby full)
+      const { count } = await supabase
+        .from('lobby_members')
+        .select('*', { count: 'exact', head: true })
+        .eq('lobby_id', lobby.id)
+
+      const isSecondPlayer = count === 1
+
+      // Join the lobby
+      const { error: joinError } = await supabase
         .from('lobby_members')
         .insert({
           lobby_id: lobby.id,
           user_id: user.id
         })
 
-      if (error) throw error
+      if (joinError) throw joinError
 
-      router.push(`/game/${lobby.id}`)
+      // If this is the second player, create the game state
+      if (isSecondPlayer) {
+        // Get the lobby's game config for base time
+        const { data: lobbyData, error: lobbyError } = await supabase
+          .from('lobbies')
+          .select('game_config, host_id')
+          .eq('id', lobby.id)
+          .single()
+
+        if (lobbyError) throw lobbyError
+
+        const baseTime = lobbyData.game_config.base_time || 180000 // 3 minutes in ms
+
+        // Get initial banned letters
+        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
+        const vowels = ['A', 'E', 'I', 'O', 'U']
+        const consonants = alphabet.filter(letter => !vowels.includes(letter))
+        
+        // Randomly select 3 consonants and 1 vowel
+        const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5)
+        const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5)
+        const initialBannedLetters = [...shuffledConsonants.slice(0, 3), shuffledVowels[0]]
+
+        // First update lobby status to in_progress to prevent subscription redirect
+        const { error: updateError } = await supabase
+          .from('lobbies')
+          .update({ status: 'in_progress' })
+          .eq('id', lobby.id)
+
+        if (updateError) throw updateError
+
+        // Then create the game state
+        const { error: stateError } = await supabase
+          .from('game_state')
+          .insert({
+            lobby_id: lobby.id,
+            current_turn: 0,
+            player1_time: baseTime,
+            player2_time: baseTime,
+            player1_score: 0,
+            player2_score: 0,
+            status: 'active',
+            banned_letters: initialBannedLetters,
+            last_move_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            updated_by: lobbyData.host_id // Use host's ID as they created the lobby
+          })
+
+        if (stateError) throw stateError
+      }
+
+      // Navigate directly to game page if we're the second player
+      if (isSecondPlayer) {
+        router.push(`/game/${lobby.id}`)
+      } else {
+        // Otherwise, just wait in the lobby
+        router.push('/lobbies')
+      }
     } catch (error) {
       console.error('Error joining lobby:', error)
       showToast('Failed to join lobby', 'error')
