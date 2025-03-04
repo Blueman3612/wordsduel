@@ -413,13 +413,15 @@ export function GameClient({ lobbyId }: GameClientProps) {
     fetchGameStateAndWords();
   }, [lobbyId]); // Remove getInitialBannedLetters from dependencies
 
-  // Fetch initial player data
+  // Fetch initial player data and set up subscriptions
   useEffect(() => {
-    const fetchPlayers = async () => {
-      if (!lobbyId || !user) return
+    if (!lobbyId || !user) return
 
+    let channel: ReturnType<typeof supabase.channel>;
+
+    const setupGameAndPresence = async () => {
       try {
-        console.log('Fetching players for lobby:', lobbyId)
+        console.log('Setting up game and presence for lobby:', lobbyId)
         
         // First get lobby members
         const { data: membersData, error: membersError } = await supabase
@@ -453,7 +455,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
         console.log('Player profiles:', profilesData)
 
-        // Transform profiles into Player objects - note removal of isOnline
+        // Transform profiles into Player objects
         const playerProfiles = profilesData?.map((profile) => ({
           id: profile.id,
           name: profile.display_name,
@@ -464,6 +466,103 @@ export function GameClient({ lobbyId }: GameClientProps) {
           games_played: 0
         })) || []
 
+        // Set up presence channel
+        channel = supabase.channel(`game:${lobbyId}`, {
+          config: {
+            presence: {
+              key: user.id
+            }
+          }
+        });
+
+        // Set up presence handlers
+        channel
+          .on('presence', { event: 'sync' }, () => {
+            const state = channel.presenceState();
+            console.log('Presence sync:', state);
+            const onlineIds = new Set(Object.keys(state));
+            dispatch({ type: 'SET_ONLINE_PLAYERS', payload: onlineIds });
+          })
+          .on('presence', { event: 'join' }, ({ key }) => {
+            console.log('Player joined:', key);
+            dispatch({ 
+              type: 'SET_ONLINE_PLAYERS', 
+              payload: new Set([...gameState.onlinePlayers, key]) 
+            });
+          })
+          .on('presence', { event: 'leave' }, ({ key }) => {
+            console.log('Player left:', key);
+            const newOnlinePlayers = new Set(gameState.onlinePlayers);
+            newOnlinePlayers.delete(key);
+            dispatch({ type: 'SET_ONLINE_PLAYERS', payload: newOnlinePlayers });
+          });
+
+        // Subscribe to game_words and game_state changes
+        channel
+          .on(
+            'postgres_changes',
+            {
+              event: 'INSERT',
+              schema: 'public',
+              table: 'game_words',
+              filter: `lobby_id=eq.${lobbyId}`
+            },
+            async (payload: RealtimePostgresChangesPayload<GameWord>) => {
+              const newWord = payload.new as GameWord;
+              if (!newWord) return;
+
+              dispatch({
+                type: 'ADD_WORD',
+                payload: {
+                  word: newWord.word,
+                  player: playerProfiles.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+                  timestamp: Date.now(),
+                  isInvalid: !newWord.is_valid,
+                  score: newWord.score,
+                  scoreBreakdown: newWord.score_breakdown,
+                  dictionary: {
+                    partOfSpeech: newWord.part_of_speech,
+                    definition: newWord.definition,
+                    phonetics: newWord.phonetics
+                  }
+                }
+              });
+            }
+          )
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'game_state',
+              filter: `lobby_id=eq.${lobbyId}`
+            },
+            (payload: RealtimePostgresChangesPayload<GameState>) => {
+              const newState = payload.new as GameState;
+              if (!newState) return;
+
+              dispatch({
+                type: 'UPDATE_GAME_STATE',
+                payload: {
+                  currentTurn: newState.current_turn,
+                  player1Time: newState.player1_time,
+                  player2Time: newState.player2_time,
+                  bannedLetters: newState.banned_letters || [],
+                  player1Score: newState.player1_score,
+                  player2Score: newState.player2_score
+                }
+              });
+            }
+          );
+
+        // Subscribe and track presence
+        await channel.subscribe();
+        await channel.track({
+          user_id: user.id,
+          online_at: new Date().toISOString()
+        });
+
+        // Set players after channel is set up
         dispatch({
           type: 'SET_PLAYERS',
           payload: playerProfiles
@@ -471,172 +570,19 @@ export function GameClient({ lobbyId }: GameClientProps) {
         console.log('Set players:', playerProfiles)
 
       } catch (error) {
-        console.error('Error in fetchPlayers:', error)
+        console.error('Error in setupGameAndPresence:', error)
       }
     }
 
-    fetchPlayers()
-  }, [lobbyId, user])
-
-  // Subscription setup effect
-  useEffect(() => {
-    if (!lobbyId || !user) return;
-
-    // Get initial game config
-    const fetchInitialConfig = async () => {
-      const { data: lobbyData } = await supabase
-        .from('lobbies')
-        .select('game_config')
-        .eq('id', lobbyId)
-        .single();
-
-      if (lobbyData?.game_config) {
-        const baseTime = lobbyData.game_config.base_time || 180000;
-        const timeIncrement = lobbyData.game_config.increment || 5000;
-        return { baseTime, timeIncrement };
-      }
-      return { baseTime: 180000, timeIncrement: 5000 };
-    };
-
-    // Set up subscriptions
-    const channel = supabase.channel(`game:${lobbyId}`, {
-      config: {
-        presence: {
-          key: user.id
-        }
-      }
-    });
-
-    // Track presence immediately
-    const trackPresence = async () => {
-      try {
-        await channel.track({
-          user_id: user.id,
-          online_at: new Date().toISOString()
-        });
-        console.log('Presence tracked for user:', user.id);
-      } catch (error) {
-        console.error('Error tracking presence:', error);
-      }
-    };
-
-    // Subscribe to game_words
-    channel
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'game_words',
-          filter: `lobby_id=eq.${lobbyId}`
-        },
-        async (payload: RealtimePostgresChangesPayload<GameWord>) => {
-          const newWord = payload.new as GameWord;
-          if (!newWord) return;
-
-          dispatch({
-            type: 'ADD_WORD',
-            payload: {
-              word: newWord.word,
-              player: gameState.players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
-              timestamp: Date.now(),
-              isInvalid: !newWord.is_valid,
-              score: newWord.score,
-              scoreBreakdown: newWord.score_breakdown,
-              dictionary: {
-                partOfSpeech: newWord.part_of_speech,
-                definition: newWord.definition,
-                phonetics: newWord.phonetics
-              }
-            }
-          });
-        }
-      )
-      // Add presence handlers with logging
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        console.log('Presence sync:', state);
-        const onlineIds = new Set(Object.keys(state));
-        dispatch({ type: 'SET_ONLINE_PLAYERS', payload: onlineIds });
-      })
-      .on('presence', { event: 'join' }, ({ key }) => {
-        console.log('Player joined:', key);
-        dispatch({ 
-          type: 'SET_ONLINE_PLAYERS', 
-          payload: new Set([...gameState.onlinePlayers, key]) 
-        });
-      })
-      .on('presence', { event: 'leave' }, ({ key }) => {
-        console.log('Player left:', key);
-        const newOnlinePlayers = new Set(gameState.onlinePlayers);
-        newOnlinePlayers.delete(key);
-        dispatch({ type: 'SET_ONLINE_PLAYERS', payload: newOnlinePlayers });
-      });
-
-    // Subscribe to game_state for banned letters
-    channel
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'game_state',
-          filter: `lobby_id=eq.${lobbyId}`
-        },
-        (payload: RealtimePostgresChangesPayload<GameState>) => {
-          const newState = payload.new as GameState;
-          if (!newState) return;
-
-          dispatch({
-            type: 'UPDATE_GAME_STATE',
-            payload: {
-              currentTurn: newState.current_turn,
-              player1Time: newState.player1_time,
-              player2Time: newState.player2_time,
-              bannedLetters: newState.banned_letters || [],
-              player1Score: newState.player1_score,
-              player2Score: newState.player2_score
-            }
-          });
-        }
-      );
-
-    // Subscribe and set up timer animation
-    channel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Channel subscribed, tracking presence...');
-        await trackPresence();
-
-        const config = await fetchInitialConfig();
-        
-        // Transform WordCard[] into GameWord[]
-        const gameWords = gameState.words.map(w => ({
-          created_at: new Date(w.timestamp).toISOString(),
-          player_id: gameState.players.find(p => p.name === w.player)?.id || ''
-        }));
-        
-        // Set up timer animation
-        return setupTimerAnimation(
-          gameWords,
-          config.baseTime,
-          config.timeIncrement,
-          gameState.players[0]?.id || '',
-          (p1Time, p2Time) => {
-            dispatch({
-              type: 'UPDATE_TIMER',
-              payload: { player1Time: p1Time, player2Time: p2Time }
-            });
-          },
-          handleTimerEnd
-        );
-      }
-    });
+    setupGameAndPresence();
 
     return () => {
-      console.log('Cleaning up subscriptions and presence...');
-      channel.unsubscribe();
-    };
-  }, [lobbyId, user?.id]);
+      if (channel) {
+        console.log('Cleaning up subscriptions and presence...');
+        channel.unsubscribe();
+      }
+    }
+  }, [lobbyId, user])
 
   // Basic word submission handler
   const handleSubmit = async (e: React.FormEvent) => {
