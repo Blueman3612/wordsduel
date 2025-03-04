@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/Button'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
-import { GameSubscriptionManager } from '@/lib/supabase/subscriptions'
+import { calculateTimeRemaining, determineCurrentTurn, setupTimerAnimation } from '@/lib/game/timer'
 
 // Interfaces
 interface GameState {
@@ -118,34 +118,25 @@ interface GameReducerState {
   player2Time: number;
   bannedLetters: string[];
   players: Player[];
-  gameStarted: boolean;
   words: WordCard[];
-  isLoadingGameOver: boolean;
   word: string;
   invalidLetters: string[];
   isFlashing: boolean;
   reportedWord: string;
-  showGameOverModal: boolean;
-  gameOverInfo: GameOverInfo | null;
   onlinePlayers: Set<string>;
-  expandDirection: 'left' | 'right';
 }
 
 type GameStateAction =
-  | { type: 'UPDATE_GAME_STATE'; payload: GameState }
+  | { type: 'UPDATE_GAME_STATE'; payload: { currentTurn: number; player1Time: number; player2Time: number; bannedLetters: string[]; player1Score: number; player2Score: number } }
   | { type: 'UPDATE_TIMER'; payload: { player1Time: number; player2Time: number } }
   | { type: 'ADD_WORD'; payload: WordCard }
   | { type: 'SET_PLAYERS'; payload: Player[] }
-  | { type: 'SET_LOADING_GAME_OVER'; payload: boolean }
   | { type: 'INITIALIZE_STATE'; payload: { gameState: GameState | null; words: WordCard[]; players: Player[] } }
   | { type: 'SET_WORD'; payload: string }
   | { type: 'SET_INVALID_LETTERS'; payload: string[] }
   | { type: 'SET_FLASHING'; payload: boolean }
   | { type: 'SET_REPORTED_WORD'; payload: string }
-  | { type: 'SET_GAME_OVER_MODAL'; payload: boolean }
-  | { type: 'SET_GAME_OVER_INFO'; payload: GameOverInfo | null }
-  | { type: 'SET_ONLINE_PLAYERS'; payload: Set<string> }
-  | { type: 'SET_EXPAND_DIRECTION'; payload: 'left' | 'right' };
+  | { type: 'SET_ONLINE_PLAYERS'; payload: Set<string> };
 
 // Game state reducer
 function gameReducer(state: GameReducerState, action: GameStateAction): GameReducerState {
@@ -153,13 +144,13 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
     case 'UPDATE_GAME_STATE':
       return {
         ...state,
-        currentTurn: action.payload.current_turn,
-        player1Time: action.payload.player1_time,
-        player2Time: action.payload.player2_time,
-        bannedLetters: action.payload.banned_letters || [],
+        currentTurn: action.payload.currentTurn,
+        player1Time: action.payload.player1Time,
+        player2Time: action.payload.player2Time,
+        bannedLetters: action.payload.bannedLetters,
         players: state.players.map((player: Player, index: number) => ({
           ...player,
-          score: index === 0 ? action.payload.player1_score : action.payload.player2_score
+          score: index === 0 ? action.payload.player1Score : action.payload.player2Score
         }))
       };
     
@@ -171,26 +162,18 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
       };
     
     case 'ADD_WORD':
-      // Only add if word doesn't exist
       if (state.words.some((w: WordCard) => w.word === action.payload.word)) {
         return state;
       }
       return {
         ...state,
-        words: [...state.words, action.payload],
-        gameStarted: true
+        words: [...state.words, action.payload]
       };
     
     case 'SET_PLAYERS':
       return {
         ...state,
         players: action.payload
-      };
-    
-    case 'SET_LOADING_GAME_OVER':
-      return {
-        ...state,
-        isLoadingGameOver: action.payload
       };
     
     case 'INITIALIZE_STATE':
@@ -203,8 +186,7 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
           bannedLetters: action.payload.gameState.banned_letters || [],
         } : {}),
         players: action.payload.players,
-        words: action.payload.words,
-        gameStarted: action.payload.words.length > 0
+        words: action.payload.words
       };
 
     case 'SET_WORD':
@@ -231,28 +213,10 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
         reportedWord: action.payload
       };
 
-    case 'SET_GAME_OVER_MODAL':
-      return {
-        ...state,
-        showGameOverModal: action.payload
-      };
-
-    case 'SET_GAME_OVER_INFO':
-      return {
-        ...state,
-        gameOverInfo: action.payload
-      };
-
     case 'SET_ONLINE_PLAYERS':
       return {
         ...state,
         onlinePlayers: action.payload
-      };
-
-    case 'SET_EXPAND_DIRECTION':
-      return {
-        ...state,
-        expandDirection: action.payload
       };
 
     default:
@@ -283,20 +247,12 @@ export function GameClient({ lobbyId }: GameClientProps) {
     bannedLetters: [],
     players: [],
     words: [],
-    gameStarted: false,
-    isLoadingGameOver: false,
     word: '',
     invalidLetters: [],
     isFlashing: false,
     reportedWord: '',
-    showGameOverModal: false,
-    gameOverInfo: null,
-    onlinePlayers: new Set<string>([]),
-    expandDirection: 'right'
+    onlinePlayers: new Set<string>([])
   } as GameReducerState);
-
-  // Remove individual useState calls since they're now in the reducer
-  const [subscriptionManager, setSubscriptionManager] = useState<GameSubscriptionManager | null>(null);
 
   // Refs
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -362,18 +318,6 @@ export function GameClient({ lobbyId }: GameClientProps) {
     setTimeout(() => dispatch({ type: 'SET_FLASHING', payload: false }), 1000);
   };
 
-  // Update expand direction for word cards
-  const updateExpandDirection = (event: React.MouseEvent<HTMLDivElement>) => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    
-    const rect = (event.target as HTMLElement).getBoundingClientRect();
-    const containerRect = container.getBoundingClientRect();
-    const spaceOnRight = containerRect.right - rect.right;
-    
-    dispatch({ type: 'SET_EXPAND_DIRECTION', payload: spaceOnRight < 310 ? 'left' : 'right' });
-  };
-
   // Auto-scroll to bottom when words change
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current
@@ -414,11 +358,14 @@ export function GameClient({ lobbyId }: GameClientProps) {
           
           dispatch({
             type: 'UPDATE_GAME_STATE',
-            payload: gameState
-          });
-          dispatch({
-            type: 'SET_LOADING_GAME_OVER',
-            payload: hasWords
+            payload: {
+              currentTurn: gameState.current_turn,
+              player1Time: gameState.player1_time,
+              player2Time: gameState.player2_time,
+              bannedLetters: gameState.banned_letters || [],
+              player1Score: gameState.player1_score,
+              player2Score: gameState.player2_score
+            }
           });
         }
 
@@ -535,100 +482,141 @@ export function GameClient({ lobbyId }: GameClientProps) {
   useEffect(() => {
     if (!lobbyId || !user) return;
 
-    // Store these in refs so we don't recreate the subscription manager on their changes
-    const currentGetBannedLetters = getInitialBannedLetters;
-    const currentPlayers = gameState.players;
+    // Get initial game config
+    const fetchInitialConfig = async () => {
+      const { data: lobbyData } = await supabase
+        .from('lobbies')
+        .select('game_config')
+        .eq('id', lobbyId)
+        .single();
 
-    const setupSubscriptions = async () => {
-      try {
-        // Get lobby data to determine if user is host
-        const { data: lobbyData } = await supabase
-          .from('lobbies')
-          .select('host_id')
-          .eq('id', lobbyId)
-          .single();
-
-        const isHost = lobbyData?.host_id === user.id;
-
-        const manager = new GameSubscriptionManager(
-          lobbyId,
-          user.id,
-          isHost,
-          {
-            onGameStateChange: (payload) => {
-              const newState = payload.new as GameState;
-              if (!newState) return;
-
-              dispatch({
-                type: 'UPDATE_GAME_STATE',
-                payload: newState
-              });
-
-              if (newState.status === 'finished' && !gameState.showGameOverModal) {
-                dispatch({
-                  type: 'SET_LOADING_GAME_OVER',
-                  payload: true
-                });
-              }
-            },
-            onTimerUpdate: (p1Time, p2Time) => {
-              dispatch({
-                type: 'UPDATE_TIMER',
-                payload: {
-                  player1Time: p1Time,
-                  player2Time: p2Time
-                }
-              });
-            },
-            onPresenceSync: (state) => {
-              const onlineIds = new Set<string>();
-              Object.entries(state).forEach(([_, presences]) => {
-                presences.forEach((presence: any) => {
-                  if (presence.user_id) {
-                    onlineIds.add(presence.user_id);
-                  }
-                });
-              });
-              dispatch({ type: 'SET_ONLINE_PLAYERS', payload: onlineIds });
-            },
-            onGameWordAdded: (payload) => {
-              const newWord = payload.new as GameWord;
-              if (!newWord) return;
-
-              dispatch({
-                type: 'ADD_WORD',
-                payload: {
-                  word: newWord.word,
-                  player: currentPlayers.find(p => p.id === newWord.player_id)?.name || 'Unknown',
-                  timestamp: Date.now(),
-                  isInvalid: !newWord.is_valid,
-                  score: newWord.score,
-                  scoreBreakdown: newWord.score_breakdown,
-                  dictionary: {
-                    partOfSpeech: newWord.part_of_speech,
-                    definition: newWord.definition,
-                    phonetics: newWord.phonetics
-                  }
-                }
-              });
-            }
-          },
-          currentGetBannedLetters
-        );
-
-        await manager.initialize();
-        setSubscriptionManager(manager);
-      } catch (error) {
-        console.error('Error setting up subscriptions:', error);
+      if (lobbyData?.game_config) {
+        const baseTime = lobbyData.game_config.base_time || 180000;
+        const timeIncrement = lobbyData.game_config.increment || 5000;
+        return { baseTime, timeIncrement };
       }
+      return { baseTime: 180000, timeIncrement: 5000 };
     };
 
-    setupSubscriptions();
+    // Set up subscriptions
+    const channel = supabase.channel(`game:${lobbyId}`, {
+      config: {
+        presence: {
+          key: user.id
+        }
+      }
+    });
+
+    // Subscribe to game_words
+    channel
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'game_words',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        async (payload: RealtimePostgresChangesPayload<GameWord>) => {
+          const newWord = payload.new as GameWord;
+          if (!newWord) return;
+
+          dispatch({
+            type: 'ADD_WORD',
+            payload: {
+              word: newWord.word,
+              player: gameState.players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+              timestamp: Date.now(),
+              isInvalid: !newWord.is_valid,
+              score: newWord.score,
+              scoreBreakdown: newWord.score_breakdown,
+              dictionary: {
+                partOfSpeech: newWord.part_of_speech,
+                definition: newWord.definition,
+                phonetics: newWord.phonetics
+              }
+            }
+          });
+        }
+      )
+      // Add presence handlers
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        const onlineIds = new Set(Object.keys(state));
+        dispatch({ type: 'SET_ONLINE_PLAYERS', payload: onlineIds });
+      })
+      .on('presence', { event: 'join' }, ({ key }) => {
+        dispatch({ 
+          type: 'SET_ONLINE_PLAYERS', 
+          payload: new Set([...gameState.onlinePlayers, key]) 
+        });
+      })
+      .on('presence', { event: 'leave' }, ({ key }) => {
+        const newOnlinePlayers = new Set(gameState.onlinePlayers);
+        newOnlinePlayers.delete(key);
+        dispatch({ type: 'SET_ONLINE_PLAYERS', payload: newOnlinePlayers });
+      });
+
+    // Subscribe to game_state for banned letters
+    channel
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'game_state',
+          filter: `lobby_id=eq.${lobbyId}`
+        },
+        (payload: RealtimePostgresChangesPayload<GameState>) => {
+          const newState = payload.new as GameState;
+          if (!newState) return;
+
+          dispatch({
+            type: 'UPDATE_GAME_STATE',
+            payload: {
+              currentTurn: newState.current_turn,
+              player1Time: newState.player1_time,
+              player2Time: newState.player2_time,
+              bannedLetters: newState.banned_letters || [],
+              player1Score: newState.player1_score,
+              player2Score: newState.player2_score
+            }
+          });
+        }
+      );
+
+    // Subscribe and set up timer animation
+    channel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        const config = await fetchInitialConfig();
+        
+        // Transform WordCard[] into GameWord[]
+        const gameWords = gameState.words.map(w => ({
+          created_at: new Date(w.timestamp).toISOString(),
+          player_id: gameState.players.find(p => p.name === w.player)?.id || ''
+        }));
+        
+        // Set up timer animation
+        return setupTimerAnimation(
+          gameWords,
+          config.baseTime,
+          config.timeIncrement,
+          gameState.players[0]?.id || '',
+          (p1Time, p2Time) => {
+            dispatch({
+              type: 'UPDATE_TIMER',
+              payload: { player1Time: p1Time, player2Time: p2Time }
+            });
+          },
+          handleTimerEnd
+        );
+      }
+    });
 
     return () => {
-      subscriptionManager?.cleanup();
+      channel.unsubscribe();
     };
-  }, [lobbyId, user?.id]); // Only depend on the essential mounting dependencies
+  }, [lobbyId, user?.id]);
 
   // Basic word submission handler
   const handleSubmit = async (e: React.FormEvent) => {
@@ -818,115 +806,39 @@ export function GameClient({ lobbyId }: GameClientProps) {
     )
   }
 
+  // Update the dispatch calls that reference removed actions
+  const handleTimerEnd = () => {
+    // Just navigate away without setting loading state
+    router.push('/');
+  };
+
+  // Remove references to expandDirection
+  const handleWordSubmit = (word: string) => {
+    // Handle word submission without expandDirection
+    dispatch({ type: 'SET_WORD', payload: word });
+  };
+
+  // Remove references to gameStarted
+  const isGameActive = gameState.words.length > 0;
+
+  // Update forfeit handler
+  const handleForfeit = async () => {
+    try {
+      await supabase.from('game_state').update({
+        status: 'finished',
+        updated_by: user?.id
+      }).eq('lobby_id', lobbyId);
+      router.push('/');
+    } catch (error) {
+      console.error('Error forfeiting game:', error);
+      showToast('Failed to forfeit game', 'error');
+    }
+  };
+
   return (
     <PageTransition>
       <main className="min-h-screen">
         {/* Game Over Modal */}
-        <ActionModal
-          isOpen={gameState.showGameOverModal}
-          onClose={() => {
-            dispatch({ type: 'SET_GAME_OVER_MODAL', payload: false })
-            dispatch({ type: 'SET_GAME_OVER_INFO', payload: null })
-            router.push('/')
-          }}
-          word=""
-          mode="info"
-          title=""
-          customButtons={
-            <Button
-              onClick={() => router.push('/')}
-              className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 w-full"
-            >
-              Return Home
-            </Button>
-          }
-        >
-          {gameState.isLoadingGameOver ? (
-            <div className="flex flex-col items-center justify-center space-y-4 py-8">
-              <div className="w-12 h-12 border-4 border-purple-500/50 border-t-purple-500 rounded-full animate-spin" />
-              <p className="text-white/70">Loading game results...</p>
-            </div>
-          ) : gameState.gameOverInfo && gameState.gameOverInfo.winner && gameState.gameOverInfo.loser ? (
-            <div className="space-y-8">
-              {/* Victory/Defeat Banner */}
-              {user?.id === gameState.gameOverInfo.winner.id ? (
-                <div className="text-center">
-                  <h3 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                    Victory!
-                  </h3>
-                </div>
-              ) : user?.id === gameState.gameOverInfo.loser.id ? (
-                <div className="text-center">
-                  <h3 className="text-4xl font-bold text-white/80">
-                    Defeat
-                  </h3>
-                </div>
-              ) : null}
-
-              {/* Players */}
-              <div className="grid grid-cols-2 gap-4">
-                {/* Winner */}
-                <div className="flex flex-col items-center gap-3 p-4 bg-white/10 rounded-xl border border-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.15)]">
-                  <Avatar
-                    src={gameState.gameOverInfo?.winner?.avatar_url}
-                    name={gameState.gameOverInfo?.winner?.name || '?'}
-                    size="lg"
-                    className="ring-2 ring-purple-500/50"
-                  />
-                  <div className="text-center space-y-2">
-                    <p className="font-medium text-white/90">{gameState.gameOverInfo?.winner?.name}</p>
-                    <div className="space-y-1">
-                      <p className="text-3xl font-bold text-white/90">
-                        {gameState.gameOverInfo?.winner?.elo || 0}
-                        <span className="text-green-400 text-xxl ml-2">
-                        (+{(gameState.gameOverInfo?.winner?.elo || 0) - (gameState.gameOverInfo?.winner?.originalElo || 0)})
-                      </span>
-                    </p>
-                      <p className="text-xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                        {gameState.gameOverInfo?.winner?.score || 0}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Loser */}
-                <div className="flex flex-col items-center gap-3 p-4 bg-white/5 rounded-xl border border-white/10">
-                  <Avatar
-                    src={gameState.gameOverInfo?.loser?.avatar_url}
-                    name={gameState.gameOverInfo?.loser?.name || '?'}
-                    size="lg"
-                    className="ring-2 ring-white/20"
-                  />
-                  <div className="text-center space-y-2">
-                    <p className="font-medium text-white/90">{gameState.gameOverInfo?.loser?.name}</p>
-                    <div className="space-y-1">
-                      <p className="text-3xl font-bold text-white/90">
-                        {gameState.gameOverInfo?.loser?.elo || 0}
-                        <span className="text-red-400 text-xxl ml-2">
-                        ({(gameState.gameOverInfo?.loser?.elo || 0) - (gameState.gameOverInfo?.loser?.originalElo || 0)})
-                      </span>
-                    </p>
-                      <p className="text-xl font-bold text-white/60">
-                        {gameState.gameOverInfo?.loser?.score || 0}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Game End Reason */}
-              <div className="text-center text-sm text-white/60">
-                Game ended due to {gameState.gameOverInfo?.reason === 'time' ? 'time expiration' : 'forfeit'}
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center justify-center py-8">
-              <p className="text-white/70">No game results available</p>
-            </div>
-          )}
-        </ActionModal>
-
-        {/* Report Modal */}
         <ActionModal
           isOpen={!!gameState.reportedWord}
           onClose={() => dispatch({ type: 'SET_REPORTED_WORD', payload: '' })}
@@ -1044,7 +956,6 @@ export function GameClient({ lobbyId }: GameClientProps) {
                   <div key={`${wordCard.word}-${wordCard.timestamp}`} className="flex items-center">
                     <div 
                       className="relative group overflow-visible" 
-                      onMouseEnter={updateExpandDirection}
                     >
                       {/* Base Card */}
                       <div 
@@ -1119,7 +1030,6 @@ export function GameClient({ lobbyId }: GameClientProps) {
                             opacity-0 pointer-events-none
                             group-hover:opacity-100 group-hover:pointer-events-auto
                             group-hover:w-[300px]
-                            ${gameState.expandDirection === 'left' ? 'right-0' : 'left-0'}
                             ${wordCard.player !== gameState.players[0]?.name 
                               ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
                               : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
@@ -1262,7 +1172,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
                             <Timer 
                               timeLeft={gameState.player1Time} 
-                              isActive={gameState.gameStarted && gameState.currentTurn === 0} 
+                              isActive={isGameActive && gameState.currentTurn === 0} 
                             />
                           </div>
                           {getPlayerOnlineStatus(gameState.players[0]?.id) === false && (
@@ -1307,7 +1217,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
                             <Timer 
                               timeLeft={gameState.player2Time} 
-                              isActive={gameState.gameStarted && gameState.currentTurn === 1} 
+                              isActive={isGameActive && gameState.currentTurn === 1} 
                             />
                           </div>
                           {getPlayerOnlineStatus(gameState.players[1]?.id) === false && (
