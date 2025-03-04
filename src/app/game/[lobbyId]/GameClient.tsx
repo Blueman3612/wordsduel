@@ -185,8 +185,8 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
           player2Time: action.payload.gameState.player2_time,
           bannedLetters: action.payload.gameState.banned_letters || [],
         } : {}),
-        players: action.payload.players,
-        words: action.payload.words
+        words: action.payload.words,
+        players: state.players.length > 0 ? state.players : action.payload.players
       };
 
     case 'SET_WORD':
@@ -413,47 +413,41 @@ export function GameClient({ lobbyId }: GameClientProps) {
     fetchGameStateAndWords();
   }, [lobbyId]); // Remove getInitialBannedLetters from dependencies
 
-  // Fetch initial player data and set up subscriptions
+  // Fetch initial player data
   useEffect(() => {
-    if (!lobbyId || !user) return
+    if (!lobbyId || !user) return;
 
-    let channel: ReturnType<typeof supabase.channel>;
-
-    const setupGameAndPresence = async () => {
+    const fetchPlayers = async () => {
       try {
-        console.log('Setting up game and presence for lobby:', lobbyId)
+        console.log('Fetching initial player data for lobby:', lobbyId);
         
         // First get lobby members
         const { data: membersData, error: membersError } = await supabase
           .from('lobby_members')
           .select('user_id, joined_at')
           .eq('lobby_id', lobbyId)
-          .order('joined_at', { ascending: true })
+          .order('joined_at', { ascending: true });
 
         if (membersError) {
-          console.error('Error fetching lobby members:', membersError)
-          return
+          console.error('Error fetching lobby members:', membersError);
+          return;
         }
 
-        console.log('Lobby members:', membersData)
-
         if (!membersData?.length) {
-          console.log('No members found in lobby')
-          return
+          console.log('No members found in lobby');
+          return;
         }
 
         // Get profiles for all members
         const { data: profilesData, error: profilesError } = await supabase
           .from('profiles')
           .select('id, display_name, avatar_url, elo')
-          .in('id', membersData.map(m => m.user_id))
+          .in('id', membersData.map(m => m.user_id));
 
         if (profilesError) {
-          console.error('Error fetching profiles:', profilesError)
-          return
+          console.error('Error fetching profiles:', profilesError);
+          return;
         }
-
-        console.log('Player profiles:', profilesData)
 
         // Transform profiles into Player objects
         const playerProfiles = profilesData?.map((profile) => ({
@@ -464,9 +458,31 @@ export function GameClient({ lobbyId }: GameClientProps) {
           avatar_url: profile.avatar_url,
           originalElo: profile.elo,
           games_played: 0
-        })) || []
+        })) || [];
 
-        // Set up presence channel
+        dispatch({
+          type: 'SET_PLAYERS',
+          payload: playerProfiles
+        });
+        console.log('Initial players set:', playerProfiles);
+      } catch (error) {
+        console.error('Error in fetchPlayers:', error);
+      }
+    };
+
+    fetchPlayers();
+  }, [lobbyId, user]);
+
+  // Set up presence and subscriptions separately
+  useEffect(() => {
+    if (!lobbyId || !user) return;
+
+    let channel: ReturnType<typeof supabase.channel>;
+
+    const setupPresenceAndSubscriptions = async () => {
+      try {
+        console.log('Setting up presence and subscriptions for lobby:', lobbyId);
+        
         channel = supabase.channel(`game:${lobbyId}`, {
           config: {
             presence: {
@@ -511,11 +527,12 @@ export function GameClient({ lobbyId }: GameClientProps) {
               const newWord = payload.new as GameWord;
               if (!newWord) return;
 
+              // Use current gameState.players for name lookup
               dispatch({
                 type: 'ADD_WORD',
                 payload: {
                   word: newWord.word,
-                  player: playerProfiles.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+                  player: gameState.players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
                   timestamp: Date.now(),
                   isInvalid: !newWord.is_valid,
                   score: newWord.score,
@@ -555,34 +572,29 @@ export function GameClient({ lobbyId }: GameClientProps) {
             }
           );
 
-        // Subscribe and track presence
         await channel.subscribe();
+        console.log('Channel subscribed');
+
         await channel.track({
           user_id: user.id,
           online_at: new Date().toISOString()
         });
-
-        // Set players after channel is set up
-        dispatch({
-          type: 'SET_PLAYERS',
-          payload: playerProfiles
-        });
-        console.log('Set players:', playerProfiles)
+        console.log('Presence tracked for user:', user.id);
 
       } catch (error) {
-        console.error('Error in setupGameAndPresence:', error)
+        console.error('Error in setupPresenceAndSubscriptions:', error);
       }
-    }
+    };
 
-    setupGameAndPresence();
+    setupPresenceAndSubscriptions();
 
     return () => {
       if (channel) {
         console.log('Cleaning up subscriptions and presence...');
         channel.unsubscribe();
       }
-    }
-  }, [lobbyId, user])
+    };
+  }, [lobbyId, user]);
 
   // Basic word submission handler
   const handleSubmit = async (e: React.FormEvent) => {
