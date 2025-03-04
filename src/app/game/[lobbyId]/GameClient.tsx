@@ -507,6 +507,19 @@ export function GameClient({ lobbyId }: GameClientProps) {
       }
     });
 
+    // Track presence immediately
+    const trackPresence = async () => {
+      try {
+        await channel.track({
+          user_id: user.id,
+          online_at: new Date().toISOString()
+        });
+        console.log('Presence tracked for user:', user.id);
+      } catch (error) {
+        console.error('Error tracking presence:', error);
+      }
+    };
+
     // Subscribe to game_words
     channel
       .on(
@@ -539,19 +552,22 @@ export function GameClient({ lobbyId }: GameClientProps) {
           });
         }
       )
-      // Add presence handlers
+      // Add presence handlers with logging
       .on('presence', { event: 'sync' }, () => {
         const state = channel.presenceState();
+        console.log('Presence sync:', state);
         const onlineIds = new Set(Object.keys(state));
         dispatch({ type: 'SET_ONLINE_PLAYERS', payload: onlineIds });
       })
       .on('presence', { event: 'join' }, ({ key }) => {
+        console.log('Player joined:', key);
         dispatch({ 
           type: 'SET_ONLINE_PLAYERS', 
           payload: new Set([...gameState.onlinePlayers, key]) 
         });
       })
       .on('presence', { event: 'leave' }, ({ key }) => {
+        console.log('Player left:', key);
         const newOnlinePlayers = new Set(gameState.onlinePlayers);
         newOnlinePlayers.delete(key);
         dispatch({ type: 'SET_ONLINE_PLAYERS', payload: newOnlinePlayers });
@@ -588,6 +604,9 @@ export function GameClient({ lobbyId }: GameClientProps) {
     // Subscribe and set up timer animation
     channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
+        console.log('Channel subscribed, tracking presence...');
+        await trackPresence();
+
         const config = await fetchInitialConfig();
         
         // Transform WordCard[] into GameWord[]
@@ -614,6 +633,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
     });
 
     return () => {
+      console.log('Cleaning up subscriptions and presence...');
       channel.unsubscribe();
     };
   }, [lobbyId, user?.id]);
