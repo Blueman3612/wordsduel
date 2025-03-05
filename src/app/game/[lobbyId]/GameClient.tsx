@@ -138,7 +138,8 @@ type GameStateAction =
   | { type: 'SET_INVALID_LETTERS'; payload: string[] }
   | { type: 'SET_FLASHING'; payload: boolean }
   | { type: 'SET_REPORTED_WORD'; payload: string }
-  | { type: 'SET_ONLINE_PLAYERS'; payload: Set<string> };
+  | { type: 'SET_ONLINE_PLAYERS'; payload: Set<string> }
+  | { type: 'UPDATE_WORD_CARDS'; payload: Player[] };
 
 // Game state reducer
 function gameReducer(state: GameReducerState, action: GameStateAction): GameReducerState {
@@ -219,6 +220,15 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
       return {
         ...state,
         onlinePlayers: action.payload
+      };
+
+    case 'UPDATE_WORD_CARDS':
+      return {
+        ...state,
+        words: state.words.map(word => ({
+          ...word,
+          player: action.payload.find(p => p.id === word.player_id)?.name || word.player_id
+        }))
       };
 
     default:
@@ -449,7 +459,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
         if (gameWords && gameState) {
           const wordCards: WordCard[] = gameWords.map((word: GameWord) => ({
             word: word.word,
-            player: 'Unknown', // We'll update this after we have players
+            player: word.player_id, // Store the player_id as the player name initially
             player_id: word.player_id,
             timestamp: new Date(word.created_at).getTime(),
             isInvalid: !word.is_valid,
@@ -462,25 +472,10 @@ export function GameClient({ lobbyId }: GameClientProps) {
             }
           }));
 
-          // Get unique player IDs from words
-          const playerIds = [...new Set(wordCards.map(w => w.player_id))];
-          
-          // Calculate total scores from words
-          const player1Score = wordCards
-            .filter(w => w.player_id === playerIds[0])
-            .reduce((sum, w) => sum + (w.score || 0), 0);
-          const player2Score = wordCards
-            .filter(w => w.player_id === playerIds[1])
-            .reduce((sum, w) => sum + (w.score || 0), 0);
-
           dispatch({
             type: 'INITIALIZE_STATE',
             payload: {
-              gameState: {
-                ...gameState,
-                player1_score: player1Score,
-                player2_score: player2Score
-              },
+              gameState,
               words: wordCards,
               players: [] // Initialize with empty players array
             }
@@ -553,6 +548,12 @@ export function GameClient({ lobbyId }: GameClientProps) {
           payload: playerProfiles
         });
         console.log('Initial players set:', playerProfiles);
+
+        // Update word cards with player names
+        dispatch({
+          type: 'UPDATE_WORD_CARDS',
+          payload: playerProfiles
+        });
       } catch (error) {
         console.error('Error in fetchPlayers:', error);
       }
@@ -620,7 +621,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                 type: 'ADD_WORD',
                 payload: {
                   word: newWord.word,
-                  player: gameState.players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+                  player: newWord.player_id, // Store player_id as player name initially
                   player_id: newWord.player_id,
                   timestamp: Date.now(),
                   isInvalid: !newWord.is_valid,
@@ -632,6 +633,12 @@ export function GameClient({ lobbyId }: GameClientProps) {
                     phonetics: newWord.phonetics
                   }
                 }
+              });
+
+              // Update word cards with player names
+              dispatch({
+                type: 'UPDATE_WORD_CARDS',
+                payload: gameState.players
               });
             }
           )
@@ -1030,7 +1037,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                           relative bg-white/10 backdrop-blur-md rounded-2xl p-4 shadow-lg overflow-visible
                           ${wordCard.isInvalid 
                             ? 'border-2 border-red-500/40 shadow-[0_0_10px_-3px_rgba(239,68,68,0.3)] bg-red-500/10' 
-                            : wordCard.player !== gameState.players[0]?.name 
+                            : wordCard.player_id !== gameState.players[0]?.id 
                               ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
                               : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
                           }
@@ -1097,7 +1104,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                             opacity-0 pointer-events-none
                             group-hover:opacity-100 group-hover:pointer-events-auto
                             group-hover:w-[300px]
-                            ${wordCard.player !== gameState.players[0]?.name 
+                            ${wordCard.player_id !== gameState.players[0]?.id 
                               ? 'border-2 border-pink-500/40 shadow-[0_0_10px_-3px_rgba(236,72,153,0.3)]' 
                               : 'border-2 border-purple-500/40 shadow-[0_0_10px_-3px_rgba(168,85,247,0.3)]'
                             }
