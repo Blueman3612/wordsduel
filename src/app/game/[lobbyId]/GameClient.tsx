@@ -126,10 +126,11 @@ interface GameReducerState {
   isFlashing: boolean;
   reportedWord: string;
   onlinePlayers: Set<string>;
+  status: 'active' | 'paused' | 'finished';
 }
 
 type GameStateAction =
-  | { type: 'UPDATE_GAME_STATE'; payload: { currentTurn: number; player1Time: number; player2Time: number; bannedLetters: string[]; player1Score: number; player2Score: number } }
+  | { type: 'UPDATE_GAME_STATE'; payload: { currentTurn: number; player1Time: number; player2Time: number; bannedLetters: string[]; player1Score: number; player2Score: number; status: 'active' | 'paused' | 'finished' } }
   | { type: 'UPDATE_TIMER'; payload: { player1Time: number; player2Time: number } }
   | { type: 'ADD_WORD'; payload: WordCard }
   | { type: 'SET_PLAYERS'; payload: Player[] }
@@ -151,6 +152,7 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
         player1Time: action.payload.player1Time,
         player2Time: action.payload.player2Time,
         bannedLetters: action.payload.bannedLetters,
+        status: action.payload.status,
         players: state.players.map((player: Player, index: number) => ({
           ...player,
           score: index === 0 ? action.payload.player1Score : action.payload.player2Score
@@ -263,7 +265,8 @@ export function GameClient({ lobbyId }: GameClientProps) {
     invalidLetters: [],
     isFlashing: false,
     reportedWord: '',
-    onlinePlayers: new Set<string>([])
+    onlinePlayers: new Set<string>([]),
+    status: 'active'
   } as GameReducerState);
 
   // Refs
@@ -422,13 +425,65 @@ export function GameClient({ lobbyId }: GameClientProps) {
         }
 
         if (gameState) {
-          // Ensure we start with turn 0 if no words have been played
-          const { count: wordCount } = await supabase
-            .from('game_words')
-            .select('id', { count: 'exact', head: true })
-            .eq('lobby_id', lobbyId);
+          // If game is already finished and ELO is updated, just set up the final state
+          if (gameState.status === 'finished' && gameState.elo_updated) {
+            console.log('Game already finished and ELO updated, setting up final state...');
+            
+            // Get lobby members in join order
+            const { data: membersData } = await supabase
+              .from('lobby_members')
+              .select('user_id, joined_at')
+              .eq('lobby_id', lobbyId)
+              .order('joined_at', { ascending: true });
 
-          const hasWords = (wordCount || 0) > 0;
+            if (membersData && membersData.length >= 2) {
+              // Get profiles with final ELO values
+              const { data: profilesData } = await supabase
+                .from('profiles')
+                .select('id, display_name, avatar_url, elo')
+                .in('id', membersData.map(m => m.user_id));
+
+              if (profilesData && profilesData.length >= 2) {
+                const player1 = profilesData.find(p => p.id === membersData[0].user_id);
+                const player2 = profilesData.find(p => p.id === membersData[1].user_id);
+
+                if (player1 && player2) {
+                  // Determine winner and loser based on time
+                  const winner = gameState.player1_time <= 0 ? player2 : player1;
+                  const loser = gameState.player1_time <= 0 ? player1 : player2;
+
+                  // Set final game over state
+                  gameEndStateRef.current = {
+                    players: profilesData.map(p => ({
+                      id: p.id,
+                      name: p.display_name,
+                      avatar_url: p.avatar_url,
+                      elo: p.elo,
+                      score: p.id === membersData[0].user_id ? gameState.player1_score : gameState.player2_score,
+                      games_played: 0
+                    })),
+                    gameOverInfo: {
+                      winner: {
+                        id: winner.id,
+                        name: winner.display_name,
+                        elo: winner.elo,
+                        avatar_url: winner.avatar_url,
+                        score: winner === player1 ? gameState.player1_score : gameState.player2_score
+                      },
+                      loser: {
+                        id: loser.id,
+                        name: loser.display_name,
+                        elo: loser.elo,
+                        avatar_url: loser.avatar_url,
+                        score: loser === player1 ? gameState.player1_score : gameState.player2_score
+                      },
+                      reason: 'time'
+                    }
+                  };
+                }
+              }
+            }
+          }
           
           // Update game state with scores
           dispatch({
@@ -439,7 +494,8 @@ export function GameClient({ lobbyId }: GameClientProps) {
               player2Time: gameState.player2_time,
               bannedLetters: gameState.banned_letters || [],
               player1Score: gameState.player1_score || 0,
-              player2Score: gameState.player2_score || 0
+              player2Score: gameState.player2_score || 0,
+              status: gameState.status
             }
           });
         }
@@ -650,21 +706,165 @@ export function GameClient({ lobbyId }: GameClientProps) {
               table: 'game_state',
               filter: `lobby_id=eq.${lobbyId}`
             },
-            (payload: RealtimePostgresChangesPayload<GameState>) => {
+            async (payload: RealtimePostgresChangesPayload<GameState>) => {
               const newState = payload.new as GameState;
               if (!newState) return;
 
-              dispatch({
-                type: 'UPDATE_GAME_STATE',
-                payload: {
-                  currentTurn: newState.current_turn,
-                  player1Time: newState.player1_time,
-                  player2Time: newState.player2_time,
-                  bannedLetters: newState.banned_letters || [],
-                  player1Score: newState.player1_score,
-                  player2Score: newState.player2_score
+              console.log('Received game state update:', newState);
+
+              // Only process if this is a new state change
+              if (payload.eventType === 'UPDATE') {
+                dispatch({
+                  type: 'UPDATE_GAME_STATE',
+                  payload: {
+                    currentTurn: newState.current_turn,
+                    player1Time: newState.player1_time,
+                    player2Time: newState.player2_time,
+                    bannedLetters: newState.banned_letters || [],
+                    player1Score: newState.player1_score,
+                    player2Score: newState.player2_score,
+                    status: newState.status
+                  }
+                });
+
+                // Only proceed with game over setup if:
+                // 1. This is a new game finish (status just changed to finished)
+                // 2. ELO is not yet updated
+                // 3. We don't already have game over info
+                if (
+                  newState.status === 'finished' && 
+                  !newState.elo_updated && 
+                  !gameEndStateRef.current.gameOverInfo &&
+                  payload.old?.status === 'active' // Ensure this is a new finish
+                ) {
+                  console.log('Game just finished, setting up initial game over state...');
+                  
+                  const setupGameOver = async () => {
+                    try {
+                      // First get lobby members in join order
+                      const { data: membersData, error: membersError } = await supabase
+                        .from('lobby_members')
+                        .select('user_id, joined_at')
+                        .eq('lobby_id', lobbyId)
+                        .order('joined_at', { ascending: true });
+
+                      if (membersError) {
+                        console.error('Error fetching lobby members:', membersError);
+                        return;
+                      }
+
+                      if (!membersData?.length) {
+                        console.error('No members found in lobby');
+                        return;
+                      }
+
+                      // Get profiles for all members with initial ELO
+                      const { data: profilesData, error: profilesError } = await supabase
+                        .from('profiles')
+                        .select('id, display_name, avatar_url, elo')
+                        .in('id', membersData.map(m => m.user_id));
+
+                      if (profilesError) {
+                        console.error('Error fetching profiles:', profilesError);
+                        return;
+                      }
+
+                      // Transform profiles into Player objects
+                      const players = profilesData?.map((profile, index) => ({
+                        id: profile.id,
+                        name: profile.display_name,
+                        elo: profile.elo,
+                        score: index === 0 ? newState.player1_score : newState.player2_score,
+                        avatar_url: profile.avatar_url,
+                        originalElo: profile.elo,
+                        games_played: 0
+                      })) || [];
+
+                      if (players.length >= 2) {
+                        const player1 = players[0];
+                        const player2 = players[1];
+
+                        if (player1 && player2) {
+                          console.log('Setting up game over info with players:', players);
+                          // Determine winner and loser based on time
+                          const winner = newState.player1_time <= 0 ? player2 : player1;
+                          const loser = newState.player1_time <= 0 ? player1 : player2;
+
+                          // Set initial game over info
+                          gameEndStateRef.current = {
+                            players: players,
+                            gameOverInfo: {
+                              winner: {
+                                id: winner.id,
+                                name: winner.name,
+                                elo: winner.elo,
+                                originalElo: winner.originalElo,
+                                avatar_url: winner.avatar_url,
+                                score: winner === player1 ? newState.player1_score : newState.player2_score
+                              },
+                              loser: {
+                                id: loser.id,
+                                name: loser.name,
+                                elo: loser.elo,
+                                originalElo: loser.originalElo,
+                                avatar_url: loser.avatar_url,
+                                score: loser === player1 ? newState.player1_score : newState.player2_score
+                              },
+                              reason: 'time'
+                            }
+                          };
+                        }
+                      }
+                    } catch (error) {
+                      console.error('Error setting up game over:', error);
+                    }
+                  };
+
+                  await setupGameOver();
                 }
-              });
+
+                // Check for ELO updates separately
+                if (
+                  newState.status === 'finished' && 
+                  newState.elo_updated && 
+                  gameEndStateRef.current.gameOverInfo &&
+                  !payload.old?.elo_updated // Only process new ELO updates
+                ) {
+                  console.log('ELO just updated, fetching new values...');
+                  
+                  const winner = gameEndStateRef.current.gameOverInfo.winner;
+                  const loser = gameEndStateRef.current.gameOverInfo.loser;
+
+                  // Fetch updated ELO values
+                  const { data: updatedProfiles } = await supabase
+                    .from('profiles')
+                    .select('id, elo')
+                    .in('id', [winner.id, loser.id]);
+
+                  if (updatedProfiles) {
+                    const updatedWinner = updatedProfiles.find(p => p.id === winner.id);
+                    const updatedLoser = updatedProfiles.find(p => p.id === loser.id);
+
+                    if (updatedWinner && updatedLoser) {
+                      // Update game over info with new ELO values
+                      gameEndStateRef.current = {
+                        ...gameEndStateRef.current,
+                        gameOverInfo: {
+                          ...gameEndStateRef.current.gameOverInfo,
+                          winner: {
+                            ...gameEndStateRef.current.gameOverInfo.winner,
+                            elo: updatedWinner.elo
+                          },
+                          loser: {
+                            ...gameEndStateRef.current.gameOverInfo.loser,
+                            elo: updatedLoser.elo
+                          }
+                        }
+                      };
+                    }
+                  }
+                }
+              }
             }
           );
 
@@ -880,10 +1080,82 @@ export function GameClient({ lobbyId }: GameClientProps) {
     )
   }
 
-  // Update the dispatch calls that reference removed actions
-  const handleTimerEnd = () => {
-    // Just navigate away without setting loading state
-    router.push('/');
+  // Update the handleTimerEnd function
+  const handleTimerEnd = async () => {
+    console.log('Timer ended, attempting to update game state...');
+    try {
+      // First check if game is already finished
+      const { data: currentState } = await supabase
+        .from('game_state')
+        .select('status, elo_updated')
+        .eq('lobby_id', lobbyId)
+        .single();
+
+      if (currentState?.status === 'finished') {
+        console.log('Game already finished, skipping timer end logic');
+        return;
+      }
+
+      // Make an atomic update to set the game status to finished
+      const { error } = await supabase
+        .from('game_state')
+        .update({
+          status: 'finished',
+          updated_by: user?.id
+        })
+        .match({ lobby_id: lobbyId, status: 'active' });
+
+      if (error) {
+        console.error('Error updating game status:', error);
+        showToast('Error ending game', 'error');
+        return;
+      }
+
+      console.log('Successfully updated game state to finished');
+
+      // Get the access token from the current session
+      const { data: { session } } = await supabase.auth.getSession();
+      const accessToken = session?.access_token;
+
+      if (!accessToken) {
+        console.error('No access token available');
+        showToast('Error updating ELO ratings', 'error');
+        return;
+      }
+
+      // Call the Edge Function with proper authorization
+      const response = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/handle_game_end`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          lobby_id: lobbyId,
+          game_status: 'finished',
+          reason: 'time'
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Error from handle_game_end function:', {
+          status: response.status,
+          statusText: response.statusText,
+          body: errorText
+        });
+        showToast('Error updating ELO ratings', 'error');
+        return;
+      }
+
+      const result = await response.json();
+      console.log('Successfully called handle_game_end function:', result);
+      showToast('Game Over!', 'info');
+
+    } catch (error) {
+      console.error('Error in handleTimerEnd:', error);
+      showToast('Error ending game', 'error');
+    }
   };
 
   // Remove references to expandDirection
@@ -913,6 +1185,91 @@ export function GameClient({ lobbyId }: GameClientProps) {
     <PageTransition>
       <main className="min-h-screen">
         {/* Game Over Modal */}
+        <ActionModal
+          isOpen={gameState.status === 'finished' && !!gameEndStateRef.current.gameOverInfo}
+          onClose={() => router.push('/')}
+          word=""
+          mode="info"
+          title="Game Over"
+          hideButtons
+        >
+          {gameEndStateRef.current.gameOverInfo && (
+            <div className="space-y-8">
+              {/* Winner Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-medium text-white/90">Winner</h3>
+                <div className="flex items-center gap-4 bg-white/5 rounded-xl p-4">
+                  <Avatar
+                    src={gameEndStateRef.current.gameOverInfo.winner.avatar_url}
+                    name={gameEndStateRef.current.gameOverInfo.winner.name}
+                    size="lg"
+                  />
+                  <div>
+                    <p className="font-medium text-white">
+                      {gameEndStateRef.current.gameOverInfo.winner.name}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <p className="text-white/60">
+                        Score: {gameEndStateRef.current.gameOverInfo.winner.score}
+                      </p>
+                      <span className="text-white/40">•</span>
+                      <p className="text-white/60">
+                        {gameEndStateRef.current.gameOverInfo.winner.elo !== gameEndStateRef.current.gameOverInfo.winner.originalElo ? (
+                          <span className="text-emerald-400">
+                            {gameEndStateRef.current.gameOverInfo.winner.originalElo} → {gameEndStateRef.current.gameOverInfo.winner.elo}
+                            {' (+' + (gameEndStateRef.current.gameOverInfo.winner.elo - (gameEndStateRef.current.gameOverInfo.winner.originalElo || 0)) + ')'}
+                          </span>
+                        ) : (
+                          <span>ELO: {gameEndStateRef.current.gameOverInfo.winner.elo}</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Loser Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-medium text-white/90">Runner-up</h3>
+                <div className="flex items-center gap-4 bg-white/5 rounded-xl p-4">
+                  <Avatar
+                    src={gameEndStateRef.current.gameOverInfo.loser.avatar_url}
+                    name={gameEndStateRef.current.gameOverInfo.loser.name}
+                    size="lg"
+                  />
+                  <div>
+                    <p className="font-medium text-white">
+                      {gameEndStateRef.current.gameOverInfo.loser.name}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <p className="text-white/60">
+                        Score: {gameEndStateRef.current.gameOverInfo.loser.score}
+                      </p>
+                      <span className="text-white/40">•</span>
+                      <p className="text-white/60">
+                        {gameEndStateRef.current.gameOverInfo.loser.elo !== gameEndStateRef.current.gameOverInfo.loser.originalElo ? (
+                          <span className="text-red-400">
+                            {gameEndStateRef.current.gameOverInfo.loser.originalElo} → {gameEndStateRef.current.gameOverInfo.loser.elo}
+                            {' (' + (gameEndStateRef.current.gameOverInfo.loser.elo - (gameEndStateRef.current.gameOverInfo.loser.originalElo || 0)) + ')'}
+                          </span>
+                        ) : (
+                          <span>ELO: {gameEndStateRef.current.gameOverInfo.loser.elo}</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Game End Reason */}
+              <p className="text-center text-white/60 mt-6">
+                Game ended due to {gameEndStateRef.current.gameOverInfo.reason === 'time' ? 'time expiration' : 'forfeit'}
+              </p>
+            </div>
+          )}
+        </ActionModal>
+
+        {/* Report Word Modal */}
         <ActionModal
           isOpen={!!gameState.reportedWord}
           onClose={() => dispatch({ type: 'SET_REPORTED_WORD', payload: '' })}
