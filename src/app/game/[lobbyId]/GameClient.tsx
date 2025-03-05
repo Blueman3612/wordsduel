@@ -1137,18 +1137,24 @@ export function GameClient({ lobbyId }: GameClientProps) {
         })
       });
 
+      const responseText = await response.text();
+      console.log('Edge Function response:', {
+        status: response.status,
+        statusText: response.statusText,
+        body: responseText
+      });
+
       if (!response.ok) {
-        const errorText = await response.text();
         console.error('Error from handle_game_end function:', {
           status: response.status,
           statusText: response.statusText,
-          body: errorText
+          body: responseText
         });
         showToast('Error updating ELO ratings', 'error');
         return;
       }
 
-      const result = await response.json();
+      const result = JSON.parse(responseText);
       console.log('Successfully called handle_game_end function:', result);
       showToast('Game Over!', 'info');
 

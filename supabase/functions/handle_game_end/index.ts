@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3"
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': '*',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
   'Access-Control-Max-Age': '86400',
   'Access-Control-Allow-Credentials': 'true'
 };
@@ -19,36 +19,32 @@ interface RequestBody {
 }
 
 Deno.serve(async (req) => {
-  // Always include CORS headers
-  const headers = {
-    ...corsHeaders,
-    'Content-Type': 'application/json',
-  }
-
-  // Handle CORS preflight requests
+  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers })
+    return new Response('ok', { headers: corsHeaders })
   }
 
   try {
+    console.log('Request method:', req.method)
+    console.log('Request headers:', Object.fromEntries(req.headers.entries()))
+    
     // Get the JWT token from the Authorization header
     const authHeader = req.headers.get('Authorization')
+    console.log('Auth header received:', authHeader?.substring(0, 20) + '...')
     if (!authHeader) {
-      return new Response(
-        JSON.stringify({ error: 'No authorization header' }),
-        { headers, status: 401 }
-      )
+      throw new Error('No authorization header')
     }
 
+    // Extract the token without the 'Bearer ' prefix
+    const token = authHeader.replace('Bearer ', '')
+    console.log('Supabase URL:', Deno.env.get('SUPABASE_URL'))
+    console.log('Using token (first 20 chars):', token.substring(0, 20) + '...')
+    
+    // Create Supabase client with auth header
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_ANON_KEY') ?? '',
       {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false
-        },
         global: {
           headers: {
             Authorization: authHeader
@@ -57,46 +53,28 @@ Deno.serve(async (req) => {
       }
     )
 
-    // Get request body
+    // Parse request body
     const { lobby_id, game_status, reason } = await req.json() as RequestBody
+    console.log('Processing game end for lobby:', lobby_id)
 
-    // Check if ELO has already been updated
-    const { data: currentState, error: stateCheckError } = await supabaseClient
-      .from('game_state')
-      .select('status, elo_updated')
-      .eq('lobby_id', lobby_id)
-      .single()
-
-    if (stateCheckError) {
-      return new Response(
-        JSON.stringify({ error: 'Failed to check game state' }),
-        { headers, status: 400 }
-      )
-    }
-
-    // If ELO has already been updated, return early
-    if (currentState.elo_updated || currentState.status === 'finished') {
-      return new Response(
-        JSON.stringify({ message: 'Game already finished and ELO updated' }),
-        { headers, status: 200 }
-      )
-    }
-
-    // Get game state
+    // Get game state and check if it exists
     const { data: gameState, error: gameStateError } = await supabaseClient
       .from('game_state')
       .select('*')
       .eq('lobby_id', lobby_id)
       .single()
 
+    console.log('Game state query result:', { 
+      hasData: !!gameState, 
+      error: gameStateError?.message,
+      lobbyId: lobby_id 
+    })
+
     if (gameStateError || !gameState) {
-      return new Response(
-        JSON.stringify({ error: 'Failed to fetch game state' }),
-        { headers, status: 400 }
-      )
+      throw new Error(`Failed to fetch game state: ${gameStateError?.message || 'No game state found'}`)
     }
 
-    // Get lobby members
+    // Get lobby members in join order
     const { data: lobbyMembers, error: lobbyError } = await supabaseClient
       .from('lobby_members')
       .select('user_id')
@@ -105,13 +83,10 @@ Deno.serve(async (req) => {
       .limit(2)
 
     if (lobbyError || !lobbyMembers || lobbyMembers.length !== 2) {
-      return new Response(
-        JSON.stringify({ error: 'Failed to fetch lobby members' }),
-        { headers, status: 400 }
-      )
+      throw new Error(`Failed to fetch lobby members: ${lobbyError?.message}`)
     }
 
-    // Determine winner/loser
+    // Determine winner/loser based on time
     const winnerId = gameState.player1_time <= 0 
       ? lobbyMembers[1].user_id 
       : lobbyMembers[0].user_id
@@ -119,40 +94,27 @@ Deno.serve(async (req) => {
       ? lobbyMembers[0].user_id 
       : lobbyMembers[1].user_id
 
-    // Get current ELO and games played
+    console.log('Determined winner/loser:', { winnerId, loserId })
+
+    // Get current ELO ratings
     const { data: profiles, error: profilesError } = await supabaseClient
       .from('profiles')
       .select('id, elo, games_played')
       .in('id', [winnerId, loserId])
 
     if (profilesError || !profiles || profiles.length !== 2) {
-      console.error('[ELO Update] Failed to fetch profiles:', {
-        error: profilesError,
-        profiles,
-        winnerId,
-        loserId
-      });
-      return new Response(
-        JSON.stringify({ error: 'Failed to fetch profiles', details: { profilesError, profiles, winnerId, loserId } }),
-        { headers, status: 400 }
-      )
+      throw new Error(`Failed to fetch profiles: ${profilesError?.message}`)
     }
-
-    console.log('[ELO Update] Fetched initial profiles:', {
-      profiles,
-      winnerId,
-      loserId
-    });
 
     const winner = profiles.find(p => p.id === winnerId)!
     const loser = profiles.find(p => p.id === loserId)!
 
-    console.log('[ELO Update] Found winner and loser:', {
+    console.log('Current ratings:', {
       winner: { id: winner.id, elo: winner.elo, games: winner.games_played },
       loser: { id: loser.id, elo: loser.elo, games: loser.games_played }
-    });
+    })
 
-    // Calculate K-factors
+    // Calculate K-factors based on games played
     const winnerKFactor = winner.games_played < 10 ? 64 
       : winner.games_played < 25 ? 32 
       : winner.games_played < 100 ? 24 
@@ -169,78 +131,45 @@ Deno.serve(async (req) => {
       averageK * (1 - 1 / (1 + Math.pow(10, (loser.elo - winner.elo) / 400)))
     )
 
-    console.log('[ELO Update] Calculated ELO changes:', {
+    console.log('Calculated ELO changes:', {
       winnerKFactor,
       loserKFactor,
       averageK,
       eloChange,
       winnerNewElo: winner.elo + eloChange,
       loserNewElo: loser.elo - eloChange
-    });
+    })
 
     // Update winner's profile
-    console.log('Updating winner profile:', {
-      userId: winner.id,
-      newElo: winner.elo + eloChange,
-      gamesPlayed: winner.games_played + 1
-    });
-    const { data: winnerUpdateData, error: winnerUpdateError } = await supabaseClient.rpc(
-      'update_profile_elo',
-      {
-        p_user_id: winner.id,
-        p_new_elo: winner.elo + eloChange,
-        p_games_played: winner.games_played + 1
-      }
-    );
-    
+    const { error: winnerUpdateError } = await supabaseClient
+      .from('profiles')
+      .update({
+        elo: winner.elo + eloChange,
+        games_played: winner.games_played + 1,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', winner.id)
+
     if (winnerUpdateError) {
-      console.error('Error updating winner profile:', winnerUpdateError);
-      return new Response(
-        JSON.stringify({ error: 'Failed to update winner profile' }),
-        { status: 500, headers }
-      );
+      throw new Error(`Failed to update winner profile: ${winnerUpdateError.message}`)
     }
-    
-    console.log('Winner profile updated:', winnerUpdateData);
 
     // Update loser's profile
-    console.log('Updating loser profile:', {
-      userId: loser.id,
-      newElo: loser.elo - eloChange,
-      gamesPlayed: loser.games_played + 1
-    });
-    const { data: loserUpdateData, error: loserUpdateError } = await supabaseClient.rpc(
-      'update_profile_elo',
-      {
-        p_user_id: loser.id,
-        p_new_elo: loser.elo - eloChange,
-        p_games_played: loser.games_played + 1
-      }
-    );
+    const { error: loserUpdateError } = await supabaseClient
+      .from('profiles')
+      .update({
+        elo: loser.elo - eloChange,
+        games_played: loser.games_played + 1,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', loser.id)
 
     if (loserUpdateError) {
-      console.error('Error updating loser profile:', loserUpdateError);
-      return new Response(
-        JSON.stringify({ error: 'Failed to update loser profile' }),
-        { status: 500, headers }
-      );
+      throw new Error(`Failed to update loser profile: ${loserUpdateError.message}`)
     }
 
-    console.log('Loser profile updated:', loserUpdateData);
-
-    // Verify the updates
-    const { data: verifyProfiles, error: verifyError } = await supabaseClient
-      .from('profiles')
-      .select('id, elo')
-      .in('id', [winnerId, loserId])
-
-    console.log('[ELO Update] Verification check:', {
-      profiles: verifyProfiles,
-      error: verifyError
-    });
-
-    // Update game state
-    const gameUpdate = await supabaseClient
+    // Update game state to mark ELO as updated
+    const { error: gameUpdateError } = await supabaseClient
       .from('game_state')
       .update({
         status: game_status,
@@ -248,26 +177,15 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString()
       })
       .eq('lobby_id', lobby_id)
-      .select()
 
-    console.log('[ELO Update] Game state update result:', {
-      error: gameUpdate.error,
-      data: gameUpdate.data,
-      status: gameUpdate.status
-    });
-
-    if (gameUpdate.error) {
-      console.error('[ELO Update] Failed to update game state:', gameUpdate.error);
-      return new Response(
-        JSON.stringify({ error: 'Failed to update game state', details: gameUpdate.error }),
-        { headers, status: 400 }
-      )
+    if (gameUpdateError) {
+      throw new Error(`Failed to update game state: ${gameUpdateError.message}`)
     }
 
-    console.log('[ELO Update] Successfully completed all updates');
+    console.log('Successfully updated all records')
 
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         success: true,
         winner: {
           id: winnerId,
@@ -280,12 +198,23 @@ Deno.serve(async (req) => {
           newElo: loser.elo - eloChange
         }
       }),
-      { headers, status: 200 }
+      { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200 
+      }
     )
+
   } catch (error) {
+    console.error('Error in handle_game_end:', error)
     return new Response(
-      JSON.stringify({ error: error.message }),
-      { headers, status: 500 }
+      JSON.stringify({ 
+        error: error.message,
+        details: error.stack
+      }),
+      { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 500 
+      }
     )
   }
 }); 
