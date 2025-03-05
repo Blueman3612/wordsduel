@@ -14,6 +14,7 @@ interface ActionModalProps {
   onSubmit?: (details: string) => void
   hideButtons?: boolean
   customButtons?: ReactNode
+  className?: string
 }
 
 const REPORT_REASONS = [
@@ -32,7 +33,8 @@ export function ActionModal({
   children,
   onSubmit,
   hideButtons = false,
-  customButtons
+  customButtons,
+  className
 }: ActionModalProps) {
   const [selectedReason, setSelectedReason] = useState<string>('Violates requirement')
   const [details, setDetails] = useState('')
@@ -71,6 +73,8 @@ export function ActionModal({
       isOpen={isOpen}
       onClose={onClose}
       title={getTitle()}
+      className={className}
+      titleClassName="text-center"
     >
       <div className={cn(
         "space-y-6",

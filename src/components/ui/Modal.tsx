@@ -1,5 +1,4 @@
 import { ReactNode } from 'react'
-import { X } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 
 interface ModalProps {
@@ -8,9 +7,10 @@ interface ModalProps {
   title?: string
   children: ReactNode
   className?: string
+  titleClassName?: string
 }
 
-export function Modal({ isOpen, onClose, title, children, className }: ModalProps) {
+export function Modal({ isOpen, onClose, title, children, className, titleClassName }: ModalProps) {
   if (!isOpen) return null
 
   return (
@@ -33,34 +33,17 @@ export function Modal({ isOpen, onClose, title, children, className }: ModalProp
       >
         {/* Header - Only show if there's a title */}
         {title && (
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold text-white">{title}</h2>
-            <button
-              onClick={onClose}
-              className="p-2 rounded-xl hover:bg-white/10 transition-colors"
-            >
-              <X className="w-5 h-5 text-white/70" />
-            </button>
+          <div className="mb-4">
+            <h2 className={cn(
+              "text-3xl font-bold text-white text-center uppercase tracking-wider",
+              titleClassName
+            )}>
+              {title}
+            </h2>
           </div>
         )}
 
-        {/* Close button without header */}
-        {!title && (
-          <button
-            onClick={onClose}
-            className="absolute top-3 right-3 p-2 rounded-xl hover:bg-white/10 transition-colors"
-          >
-            <X className="w-5 h-5 text-white/70" />
-          </button>
-        )}
-
-        {/* Content */}
-        <div className={cn(
-          "text-white/90",
-          !title && "pt-2" // Add a bit of top padding when there's no header
-        )}>
-          {children}
-        </div>
+        {children}
       </div>
     </div>
   )

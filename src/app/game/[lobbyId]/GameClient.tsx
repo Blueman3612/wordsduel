@@ -140,7 +140,8 @@ type GameStateAction =
   | { type: 'SET_FLASHING'; payload: boolean }
   | { type: 'SET_REPORTED_WORD'; payload: string }
   | { type: 'SET_ONLINE_PLAYERS'; payload: Set<string> }
-  | { type: 'UPDATE_WORD_CARDS'; payload: Player[] };
+  | { type: 'UPDATE_WORD_CARDS'; payload: Player[] }
+  | { type: 'SET_GAME_OVER'; payload: { winner: Player; loser: Player } };
 
 // Game state reducer
 function gameReducer(state: GameReducerState, action: GameStateAction): GameReducerState {
@@ -231,6 +232,12 @@ function gameReducer(state: GameReducerState, action: GameStateAction): GameRedu
           ...word,
           player: action.payload.find(p => p.id === word.player_id)?.name || word.player_id
         }))
+      };
+
+    case 'SET_GAME_OVER':
+      return {
+        ...state,
+        status: 'finished'
       };
 
     default:
@@ -467,6 +474,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                         id: winner.id,
                         name: winner.display_name,
                         elo: winner.elo,
+                        originalElo: winner.elo,
                         avatar_url: winner.avatar_url,
                         score: winner === player1 ? gameState.player1_score : gameState.player2_score
                       },
@@ -474,6 +482,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                         id: loser.id,
                         name: loser.display_name,
                         elo: loser.elo,
+                        originalElo: loser.elo,
                         avatar_url: loser.avatar_url,
                         score: loser === player1 ? gameState.player1_score : gameState.player2_score
                       },
@@ -806,7 +815,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                                 id: loser.id,
                                 name: loser.name,
                                 elo: loser.elo,
-                                originalElo: loser.originalElo,
+                                originalElo: loser.elo,
                                 avatar_url: loser.avatar_url,
                                 score: loser === player1 ? newState.player1_score : newState.player2_score
                               },
@@ -846,6 +855,10 @@ export function GameClient({ lobbyId }: GameClientProps) {
                     const updatedLoser = updatedProfiles.find(p => p.id === loser.id);
 
                     if (updatedWinner && updatedLoser) {
+                      // Store original ELO values before updating
+                      if (!winner.originalElo) winner.originalElo = winner.elo;
+                      if (!loser.originalElo) loser.originalElo = loser.elo;
+
                       // Update game over info with new ELO values
                       gameEndStateRef.current = {
                         ...gameEndStateRef.current,
@@ -861,6 +874,26 @@ export function GameClient({ lobbyId }: GameClientProps) {
                           }
                         }
                       };
+
+                      // Force a re-render with the new game over state
+                      dispatch({ type: 'SET_GAME_OVER', payload: { 
+                        winner: {
+                          id: winner.id,
+                          name: winner.name,
+                          avatar_url: winner.avatar_url,
+                          elo: updatedWinner.elo,
+                          score: winner.score,
+                          games_played: 0
+                        },
+                        loser: {
+                          id: loser.id,
+                          name: loser.name,
+                          avatar_url: loser.avatar_url,
+                          elo: updatedLoser.elo,
+                          score: loser.score,
+                          games_played: 0
+                        }
+                      }});
                     }
                   }
                 }
@@ -1096,6 +1129,55 @@ export function GameClient({ lobbyId }: GameClientProps) {
         return;
       }
 
+      // Set up initial game over state before making any updates
+      const winner = gameState.player1Time <= 0 ? gameState.players[1] : gameState.players[0];
+      const loser = gameState.player1Time <= 0 ? gameState.players[0] : gameState.players[1];
+
+      if (winner && loser) {
+        gameEndStateRef.current = {
+          players: gameState.players,
+          gameOverInfo: {
+            winner: {
+              id: winner.id,
+              name: winner.name,
+              elo: winner.elo,
+              originalElo: winner.elo,
+              avatar_url: winner.avatar_url,
+              score: winner.score
+            },
+            loser: {
+              id: loser.id,
+              name: loser.name,
+              elo: loser.elo,
+              originalElo: loser.elo,
+              avatar_url: loser.avatar_url,
+              score: loser.score
+            },
+            reason: 'time'
+          }
+        };
+
+        // Update game state to show modal immediately
+        dispatch({ type: 'SET_GAME_OVER', payload: { 
+          winner: {
+            id: winner.id,
+            name: winner.name,
+            avatar_url: winner.avatar_url,
+            elo: winner.elo,
+            score: winner.score,
+            games_played: 0
+          },
+          loser: {
+            id: loser.id,
+            name: loser.name,
+            avatar_url: loser.avatar_url,
+            elo: loser.elo,
+            score: loser.score,
+            games_played: 0
+          }
+        }});
+      }
+
       // Make an atomic update to set the game status to finished
       const { error } = await supabase
         .from('game_state')
@@ -1110,8 +1192,6 @@ export function GameClient({ lobbyId }: GameClientProps) {
         showToast('Error ending game', 'error');
         return;
       }
-
-      console.log('Successfully updated game state to finished');
 
       // Get the access token from the current session
       const { data: { session } } = await supabase.auth.getSession();
@@ -1156,6 +1236,46 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
       const result = JSON.parse(responseText);
       console.log('Successfully called handle_game_end function:', result);
+
+      // Update game over state with ELO changes
+      if (gameEndStateRef.current.gameOverInfo) {
+        const winner = gameEndStateRef.current.gameOverInfo.winner;
+        const loser = gameEndStateRef.current.gameOverInfo.loser;
+
+        // Update winner and loser ELO values
+        if (winner.id === result.winner.id) {
+          gameEndStateRef.current.gameOverInfo.winner.originalElo = result.winner.oldElo;
+          gameEndStateRef.current.gameOverInfo.winner.elo = result.winner.newElo;
+          gameEndStateRef.current.gameOverInfo.loser.originalElo = result.loser.oldElo;
+          gameEndStateRef.current.gameOverInfo.loser.elo = result.loser.newElo;
+        } else {
+          gameEndStateRef.current.gameOverInfo.winner.originalElo = result.loser.oldElo;
+          gameEndStateRef.current.gameOverInfo.winner.elo = result.loser.newElo;
+          gameEndStateRef.current.gameOverInfo.loser.originalElo = result.winner.oldElo;
+          gameEndStateRef.current.gameOverInfo.loser.elo = result.winner.newElo;
+        }
+
+        // Force a re-render with the new game over state
+        dispatch({ type: 'SET_GAME_OVER', payload: { 
+          winner: {
+            id: winner.id,
+            name: winner.name,
+            avatar_url: winner.avatar_url,
+            elo: result.winner.newElo,
+            score: winner.score,
+            games_played: 0
+          },
+          loser: {
+            id: loser.id,
+            name: loser.name,
+            avatar_url: loser.avatar_url,
+            elo: result.loser.newElo,
+            score: loser.score,
+            games_played: 0
+          }
+        }});
+      }
+
       showToast('Game Over!', 'info');
 
     } catch (error) {
@@ -1196,81 +1316,60 @@ export function GameClient({ lobbyId }: GameClientProps) {
           onClose={() => router.push('/')}
           word=""
           mode="info"
-          title="Game Over"
+          title={gameEndStateRef.current.gameOverInfo?.winner.id === user?.id ? "VICTORY" : "DEFEAT"}
           hideButtons
+          className="text-center px-2"
         >
           {gameEndStateRef.current.gameOverInfo && (
-            <div className="space-y-8">
-              {/* Winner Section */}
-              <div className="space-y-4">
-                <h3 className="text-lg font-medium text-white/90">Winner</h3>
-                <div className="flex items-center gap-4 bg-white/5 rounded-xl p-4">
+            <div className="flex flex-col items-center gap-8">
+              <div className="flex items-center justify-center gap-8">
+                {/* Winner */}
+                <div className="text-center">
                   <Avatar
                     src={gameEndStateRef.current.gameOverInfo.winner.avatar_url}
                     name={gameEndStateRef.current.gameOverInfo.winner.name}
-                    size="lg"
+                    size="xl"
+                    className="ring-4 ring-emerald-500/40 shadow-[0_0_25px_rgba(16,185,129,0.4)]"
                   />
-                  <div>
-                    <p className="font-medium text-white">
-                      {gameEndStateRef.current.gameOverInfo.winner.name}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <p className="text-white/60">
-                        Score: {gameEndStateRef.current.gameOverInfo.winner.score}
-                      </p>
-                      <span className="text-white/40">•</span>
-                      <p className="text-white/60">
-                        {gameEndStateRef.current.gameOverInfo.winner.elo !== gameEndStateRef.current.gameOverInfo.winner.originalElo ? (
-                          <span className="text-emerald-400">
-                            {gameEndStateRef.current.gameOverInfo.winner.originalElo} → {gameEndStateRef.current.gameOverInfo.winner.elo}
-                            {' (+' + (gameEndStateRef.current.gameOverInfo.winner.elo - (gameEndStateRef.current.gameOverInfo.winner.originalElo || 0)) + ')'}
-                          </span>
-                        ) : (
-                          <span>ELO: {gameEndStateRef.current.gameOverInfo.winner.elo}</span>
-                        )}
-                      </p>
-                    </div>
+                  <div className="mt-4 text-lg">
+                    <span className="text-white/90 font-bold">
+                      {gameEndStateRef.current.gameOverInfo.winner.elo}{' '}
+                      <span className="text-emerald-400">
+                        (+{gameEndStateRef.current.gameOverInfo.winner.elo - (gameEndStateRef.current.gameOverInfo.winner.originalElo || 0)})
+                      </span>
+                    </span>
                   </div>
                 </div>
-              </div>
 
-              {/* Loser Section */}
-              <div className="space-y-4">
-                <h3 className="text-lg font-medium text-white/90">Runner-up</h3>
-                <div className="flex items-center gap-4 bg-white/5 rounded-xl p-4">
+                <div className="flex flex-col items-center">
+                  <div className="text-2xl font-light text-white/40 translate-y-[-1rem]">VS</div>
+                  <div className="text-sm text-white/30 mt-2">
+                    {gameEndStateRef.current.gameOverInfo.reason === 'time' ? 'Time expired' : 'Player forfeited'}
+                  </div>
+                </div>
+
+                {/* Loser */}
+                <div className="text-center">
                   <Avatar
                     src={gameEndStateRef.current.gameOverInfo.loser.avatar_url}
                     name={gameEndStateRef.current.gameOverInfo.loser.name}
-                    size="lg"
+                    size="xl"
+                    className="ring-4 ring-red-500/40 shadow-[0_0_25px_rgba(239,68,68,0.4)]"
                   />
-                  <div>
-                    <p className="font-medium text-white">
-                      {gameEndStateRef.current.gameOverInfo.loser.name}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <p className="text-white/60">
-                        Score: {gameEndStateRef.current.gameOverInfo.loser.score}
-                      </p>
-                      <span className="text-white/40">•</span>
-                      <p className="text-white/60">
-                        {gameEndStateRef.current.gameOverInfo.loser.elo !== gameEndStateRef.current.gameOverInfo.loser.originalElo ? (
-                          <span className="text-red-400">
-                            {gameEndStateRef.current.gameOverInfo.loser.originalElo} → {gameEndStateRef.current.gameOverInfo.loser.elo}
-                            {' (' + (gameEndStateRef.current.gameOverInfo.loser.elo - (gameEndStateRef.current.gameOverInfo.loser.originalElo || 0)) + ')'}
-                          </span>
-                        ) : (
-                          <span>ELO: {gameEndStateRef.current.gameOverInfo.loser.elo}</span>
-                        )}
-                      </p>
-                    </div>
+                  <div className="mt-4 text-lg">
+                    <span className="text-white/90 font-bold">
+                      {gameEndStateRef.current.gameOverInfo.loser.elo}{' '}
+                      <span className="text-red-400">
+                        ({gameEndStateRef.current.gameOverInfo.loser.elo - (gameEndStateRef.current.gameOverInfo.loser.originalElo || 0)})
+                      </span>
+                    </span>
                   </div>
                 </div>
               </div>
 
-              {/* Game End Reason */}
-              <p className="text-center text-white/60 mt-6">
-                Game ended due to {gameEndStateRef.current.gameOverInfo.reason === 'time' ? 'time expiration' : 'forfeit'}
-              </p>
+              <Button onClick={() => router.push('/')}>
+                Done
+              </Button>
             </div>
           )}
         </ActionModal>
