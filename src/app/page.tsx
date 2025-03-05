@@ -255,6 +255,16 @@ export default function HomePage() {
       const availableLobby = availableLobbies && availableLobbies.length > 0 ? availableLobbies[0] : null
 
       if (availableLobby) {
+        // Join the lobby first
+        const { error: joinError } = await supabase
+          .from('lobby_members')
+          .insert({
+            lobby_id: availableLobby.id,
+            user_id: user.id
+          })
+
+        if (joinError) throw joinError
+
         // Check if lobby is full
         const { count, error: countError } = await supabase
           .from('lobby_members')
@@ -264,17 +274,17 @@ export default function HomePage() {
         if (countError) throw countError
 
         // If this makes the lobby full, create game state and redirect to game
-        if (count && count + 1 >= availableLobby.max_players) {
+        if (count !== null && count >= availableLobby.max_players) {
           const baseTime = availableLobby.game_config.base_time || 180000 // 3 minutes in ms
 
           // Get initial banned letters
-          const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
-          const vowels = ['A', 'E', 'I', 'O', 'U']
-          const consonants = alphabet.filter(letter => !vowels.includes(letter))
+          const alphabet: string[] = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
+          const vowels: string[] = ['A', 'E', 'I', 'O', 'U']
+          const consonants: string[] = alphabet.filter((letter: string) => !vowels.includes(letter))
           
           // Randomly select 3 consonants and 1 vowel
-          const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5)
-          const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5)
+          const shuffledConsonants: string[] = [...consonants].sort(() => Math.random() - 0.5)
+          const shuffledVowels: string[] = [...vowels].sort(() => Math.random() - 0.5)
           const initialBannedLetters = [...shuffledConsonants.slice(0, 3), shuffledVowels[0]]
 
           // First update lobby status to in_progress to prevent subscription redirect
