@@ -54,6 +54,7 @@ interface GameWord {
 interface WordCard {
   word: string
   player: string
+  player_id: string
   timestamp: number
   isInvalid?: boolean
   score?: number
@@ -329,6 +330,68 @@ export function GameClient({ lobbyId }: GameClientProps) {
     })
   }, [gameState.words])
 
+  // Set up timer animation
+  useEffect(() => {
+    if (!user || !gameState.players.length || !gameState.words) return;
+
+    // Get the lobby config for base time and increment
+    const fetchLobbyConfig = async () => {
+      const { data: lobbyData, error: lobbyError } = await supabase
+        .from('lobbies')
+        .select('game_config')
+        .eq('id', lobbyId)
+        .maybeSingle();
+
+      if (lobbyError) {
+        console.error('Error fetching lobby config:', lobbyError);
+        return;
+      }
+
+      const baseTime = lobbyData?.game_config.base_time || 180000; // 3 minutes in ms
+      const timeIncrement = lobbyData?.game_config.increment || 5000; // 5 seconds in ms
+
+      // Convert game words to the format expected by timer functions
+      const timerWords = gameState.words.map(w => ({
+        created_at: new Date(w.timestamp).toISOString(),
+        player_id: w.player_id // Use player_id directly from the word
+      }));
+
+      // Get the player who joined first (they are player 1)
+      const firstPlayer = gameState.players[0];
+      if (!firstPlayer) {
+        console.error('No players found for timer setup');
+        return;
+      }
+
+      // Set up timer animation
+      const cleanup = setupTimerAnimation(
+        timerWords,
+        baseTime,
+        timeIncrement,
+        firstPlayer.id, // Use the first player's ID as player1Id
+        (player1Time, player2Time) => {
+          dispatch({
+            type: 'UPDATE_TIMER',
+            payload: { player1Time, player2Time }
+          });
+        },
+        handleTimerEnd
+      );
+
+      return cleanup;
+    };
+
+    const setupTimer = async () => {
+      const cleanup = await fetchLobbyConfig();
+      return () => cleanup?.();
+    };
+
+    const cleanupPromise = setupTimer();
+    return () => {
+      cleanupPromise.then(cleanup => cleanup?.());
+    };
+  }, [user, gameState.players, gameState.words, lobbyId]);
+
   // Fetch initial game state and words
   useEffect(() => {
     const fetchGameStateAndWords = async () => {
@@ -385,6 +448,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
           const wordCards: WordCard[] = gameWords.map((word: GameWord) => ({
             word: word.word,
             player: 'Unknown', // We'll update this after we have players
+            player_id: word.player_id,
             timestamp: new Date(word.created_at).getTime(),
             isInvalid: !word.is_valid,
             score: word.score,
@@ -533,6 +597,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
                 payload: {
                   word: newWord.word,
                   player: gameState.players.find(p => p.id === newWord.player_id)?.name || 'Unknown',
+                  player_id: newWord.player_id,
                   timestamp: Date.now(),
                   isInvalid: !newWord.is_valid,
                   score: newWord.score,

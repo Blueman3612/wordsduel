@@ -9,44 +9,52 @@ export function calculateTimeRemaining(
   timeIncrement: number,
   player1Id: string
 ): { player1Time: number; player2Time: number } {
-  let player1Time = baseTime;
-  let player2Time = baseTime;
-  
   // If no words played, return full time for both players
   if (words.length === 0) {
-    return { player1Time, player2Time };
+    return { 
+      player1Time: baseTime,
+      player2Time: baseTime 
+    };
   }
 
-  // Add increments for played words
+  // Calculate increments for each player
   const player1Words = words.filter(w => w.player_id === player1Id);
   const player2Words = words.filter(w => w.player_id !== player1Id);
-  player1Time += timeIncrement * player1Words.length;
-  player2Time += timeIncrement * player2Words.length;
+  const player1Increment = timeIncrement * player1Words.length;
+  const player2Increment = timeIncrement * player2Words.length;
 
-  // Process time used between moves
-  for (let i = 0; i < words.length - 1; i++) {
+  // Initialize timers with base time + increments
+  let player1Time = baseTime + player1Increment;
+  let player2Time = baseTime + player2Increment;
+
+  // Calculate elapsed time for each player's turns
+  for (let i = 1; i < words.length; i++) {
+    const prevWord = words[i - 1];
     const currentWord = words[i];
-    const nextWord = words[i + 1];
-    const timeUsed = new Date(nextWord.created_at).getTime() - new Date(currentWord.created_at).getTime();
+    const elapsedTime = new Date(currentWord.created_at).getTime() - new Date(prevWord.created_at).getTime();
 
-    // Subtract time from the player whose turn it WAS
-    if (currentWord.player_id === player1Id) {
-      player2Time = Math.max(0, player2Time - timeUsed);
+    // Subtract elapsed time from the player whose turn it was
+    if (prevWord.player_id === player1Id) {
+      player2Time = Math.max(0, player2Time - elapsedTime);
     } else {
-      player1Time = Math.max(0, player1Time - timeUsed);
+      player1Time = Math.max(0, player1Time - elapsedTime);
     }
   }
 
-  // Calculate time since last move for current player
+  // Get the last word played to determine whose timer should be counting down
   const lastWord = words[words.length - 1];
-  const lastMoveTime = new Date(lastWord.created_at).getTime();
-  const elapsedSinceLastMove = Date.now() - lastMoveTime;
+  const lastWordTime = new Date(lastWord.created_at).getTime();
+  const currentTime = Date.now();
+  const currentElapsedTime = currentTime - lastWordTime;
 
-  // Subtract elapsed time from the player whose turn it currently is
+  // If player 1 played last, it's player 2's turn (their timer should be counting down)
+  // If player 2 played last, it's player 1's turn (their timer should be counting down)
   if (lastWord.player_id === player1Id) {
-    player2Time = Math.max(0, player2Time - elapsedSinceLastMove);
+    // Player 1 played last, so player 2's timer should be counting down
+    player2Time = Math.max(0, player2Time - currentElapsedTime);
   } else {
-    player1Time = Math.max(0, player1Time - elapsedSinceLastMove);
+    // Player 2 played last, so player 1's timer should be counting down
+    player1Time = Math.max(0, player1Time - currentElapsedTime);
   }
 
   return { player1Time, player2Time };
