@@ -32,6 +32,7 @@ interface GameState {
   updated_at: string
   updated_by: string
   elo_updated?: boolean
+  players?: Player[]
 }
 
 interface GameWord {
@@ -419,6 +420,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
           const hasWords = (wordCount || 0) > 0;
           
+          // Update game state with scores
           dispatch({
             type: 'UPDATE_GAME_STATE',
             payload: {
@@ -426,8 +428,8 @@ export function GameClient({ lobbyId }: GameClientProps) {
               player1Time: gameState.player1_time,
               player2Time: gameState.player2_time,
               bannedLetters: gameState.banned_letters || [],
-              player1Score: gameState.player1_score,
-              player2Score: gameState.player2_score
+              player1Score: gameState.player1_score || 0,
+              player2Score: gameState.player2_score || 0
             }
           });
         }
@@ -460,10 +462,25 @@ export function GameClient({ lobbyId }: GameClientProps) {
             }
           }));
 
+          // Get unique player IDs from words
+          const playerIds = [...new Set(wordCards.map(w => w.player_id))];
+          
+          // Calculate total scores from words
+          const player1Score = wordCards
+            .filter(w => w.player_id === playerIds[0])
+            .reduce((sum, w) => sum + (w.score || 0), 0);
+          const player2Score = wordCards
+            .filter(w => w.player_id === playerIds[1])
+            .reduce((sum, w) => sum + (w.score || 0), 0);
+
           dispatch({
             type: 'INITIALIZE_STATE',
             payload: {
-              gameState,
+              gameState: {
+                ...gameState,
+                player1_score: player1Score,
+                player2_score: player2Score
+              },
               words: wordCards,
               players: [] // Initialize with empty players array
             }
@@ -513,12 +530,19 @@ export function GameClient({ lobbyId }: GameClientProps) {
           return;
         }
 
-        // Transform profiles into Player objects
-        const playerProfiles = profilesData?.map((profile) => ({
+        // Get current game state for scores
+        const { data: gameState } = await supabase
+          .from('game_state')
+          .select('player1_score, player2_score')
+          .eq('lobby_id', lobbyId)
+          .maybeSingle();
+
+        // Transform profiles into Player objects with correct scores
+        const playerProfiles = profilesData?.map((profile, index) => ({
           id: profile.id,
           name: profile.display_name,
           elo: profile.elo,
-          score: 0,
+          score: index === 0 ? (gameState?.player1_score || 0) : (gameState?.player2_score || 0),
           avatar_url: profile.avatar_url,
           originalElo: profile.elo,
           games_played: 0
