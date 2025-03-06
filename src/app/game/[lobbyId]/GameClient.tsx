@@ -647,24 +647,54 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
         // Set up presence handlers
         channel
-          .on('presence', { event: 'sync' }, () => {
+          .on('presence', { event: 'sync' }, async () => {
             const state = channel.presenceState();
             console.log('Presence sync:', state);
             const onlineIds = new Set(Object.keys(state));
             dispatch({ type: 'SET_ONLINE_PLAYERS', payload: onlineIds });
+
+            // Update presence in database
+            try {
+              await supabase.rpc('update_lobby_presence', {
+                p_lobby_id: lobbyId,
+                p_user_id: user.id
+              });
+            } catch (error) {
+              console.error('Error updating presence:', error);
+            }
           })
-          .on('presence', { event: 'join' }, ({ key }) => {
+          .on('presence', { event: 'join' }, async ({ key }) => {
             console.log('Player joined:', key);
             dispatch({ 
               type: 'SET_ONLINE_PLAYERS', 
               payload: new Set([...gameState.onlinePlayers, key]) 
             });
+
+            // Update presence in database
+            try {
+              await supabase.rpc('update_lobby_presence', {
+                p_lobby_id: lobbyId,
+                p_user_id: key
+              });
+            } catch (error) {
+              console.error('Error updating presence:', error);
+            }
           })
-          .on('presence', { event: 'leave' }, ({ key }) => {
+          .on('presence', { event: 'leave' }, async ({ key }) => {
             console.log('Player left:', key);
             const newOnlinePlayers = new Set(gameState.onlinePlayers);
             newOnlinePlayers.delete(key);
             dispatch({ type: 'SET_ONLINE_PLAYERS', payload: newOnlinePlayers });
+
+            // Remove presence from database
+            try {
+              await supabase.rpc('remove_lobby_presence', {
+                p_lobby_id: lobbyId,
+                p_user_id: key
+              });
+            } catch (error) {
+              console.error('Error removing presence:', error);
+            }
           });
 
         // Subscribe to game_words and game_state changes
@@ -917,10 +947,32 @@ export function GameClient({ lobbyId }: GameClientProps) {
 
     setupPresenceAndSubscriptions();
 
+    // Set up cleanup on unmount
     return () => {
       if (channel) {
         console.log('Cleaning up subscriptions and presence...');
-        channel.unsubscribe();
+        // Remove presence before unsubscribing
+        (async () => {
+          try {
+            const { error } = await supabase.rpc('remove_lobby_presence', {
+              p_lobby_id: lobbyId,
+              p_user_id: user.id
+            });
+            
+            if (error) {
+              throw error;
+            }
+            
+            console.log('Presence removed successfully');
+            // Only unsubscribe after presence is removed
+            channel.unsubscribe();
+            console.log('Channel unsubscribed');
+          } catch (error) {
+            console.error('Error removing presence on cleanup:', error);
+            // Still try to unsubscribe even if presence removal fails
+            channel.unsubscribe();
+          }
+        })();
       }
     };
   }, [lobbyId, user]);
