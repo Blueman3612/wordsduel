@@ -75,7 +75,7 @@ export default function LobbiesPage() {
             user_id
           )
         `)
-        .eq('status', 'waiting')
+        .or(`status.eq.waiting,status.eq.in_progress`)
         .order('created_at', { ascending: false })
 
       if (lobbiesError) {
@@ -147,7 +147,7 @@ export default function LobbiesPage() {
           table: 'lobby_members'
         },
         async () => {
-          // Check if user is in a full lobby
+          // Check if user is in any lobby
           const { data: userLobbies, error: userLobbyError } = await supabase
             .from('lobby_members')
             .select('lobby_id')
@@ -160,27 +160,30 @@ export default function LobbiesPage() {
 
           if (userLobbies && userLobbies.length > 0) {
             const userLobby = userLobbies[0] // Take the first lobby if user is in multiple
-            const { data: lobbies, error: lobbyError } = await supabase
+            const { data: lobby, error: lobbyError } = await supabase
               .from('lobbies')
               .select('id, max_players, status')
               .eq('id', userLobby.lobby_id)
-              .eq('status', 'waiting')
+              .single()
 
             if (lobbyError) {
               console.error('Error checking lobby:', lobbyError)
               return
             }
 
-            // Only redirect if we find a waiting lobby that's full
-            // This prevents redirect loops when we're already transitioning to the game
-            if (lobbies && lobbies.length > 0) {
-              const lobby = lobbies[0]
+            // Redirect if:
+            // 1. Lobby is full and waiting, OR
+            // 2. Lobby is in progress
+            if (lobby) {
               const { count } = await supabase
                 .from('lobby_members')
                 .select('*', { count: 'exact', head: true })
                 .eq('lobby_id', userLobby.lobby_id)
 
-              if (count && count >= lobby.max_players) {
+              if (count && (
+                (lobby.status === 'waiting' && count >= lobby.max_players) ||
+                lobby.status === 'in_progress'
+              )) {
                 router.push(`/game/${userLobby.lobby_id}`)
                 return
               }
@@ -558,7 +561,15 @@ export default function LobbiesPage() {
                   </div>
                   {lobby.host_id === user?.id ? (
                     <div className="flex items-center gap-4">
-                      {lobby._count.members < lobby.max_players && (
+                      {lobby.status === 'in_progress' ? (
+                        <Button
+                          onClick={() => router.push(`/game/${lobby.id}`)}
+                          className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 flex items-center gap-2 animate-pulse-subtle"
+                        >
+                          <Play className="w-4 h-4" />
+                          Join
+                        </Button>
+                      ) : lobby._count.members < lobby.max_players && (
                         <div className="text-sm text-white/40 italic animate-pulse">
                           Waiting for players...
                         </div>
@@ -573,7 +584,7 @@ export default function LobbiesPage() {
                     </div>
                   ) : lobby.is_member ? (
                     <div className="flex items-center gap-4">
-                      {lobby._count.members >= lobby.max_players && (
+                      {lobby.status === 'in_progress' && (
                         <Button
                           onClick={() => router.push(`/game/${lobby.id}`)}
                           className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 flex items-center gap-2 animate-pulse-subtle"
