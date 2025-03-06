@@ -46,6 +46,15 @@ const formatTime = (seconds: number) => {
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
 }
 
+const formatCreatedAt = (timestamp: string) => {
+  const date = new Date(timestamp)
+  return date.toLocaleTimeString('en-US', { 
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true 
+  })
+}
+
 export default function LobbiesPage() {
   const router = useRouter()
   const { user } = useAuth()
@@ -195,12 +204,8 @@ export default function LobbiesPage() {
       )
       .subscribe()
 
-    // Refresh lobbies less frequently to prevent 406 errors
-    const refreshInterval = setInterval(fetchLobbies, 3000)
-
     return () => {
       supabase.removeChannel(lobbySubscription)
-      clearInterval(refreshInterval)
     }
   }, [user, router, fetchLobbies])
 
@@ -554,7 +559,7 @@ export default function LobbiesPage() {
                       <div className="flex items-center gap-1">
                         <Clock className="w-4 h-4" />
                         <span>
-                          {format(lobby.created_at)}
+                          {formatCreatedAt(lobby.created_at)}
                         </span>
                       </div>
                     </div>
