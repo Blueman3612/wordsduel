@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback, useReducer } from 'react'
+import { useRef, useEffect, useCallback, useReducer, useMemo } from 'react'
 import { Send, X, Flag } from 'lucide-react'
 import { ActionModal } from '@/components/game/ActionModal'
 import { PageTransition } from '@/components/layout/PageTransition'
@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/Button'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
-import { calculateTimeRemaining, determineCurrentTurn, setupTimerAnimation } from '@/lib/game/timer'
+import { setupTimerAnimation } from '@/lib/game/timer'
 
 // Interfaces
 interface GameState {
@@ -84,11 +84,6 @@ interface Player {
 }
 
 type Letter = keyof typeof SCORING_WEIGHTS.RARITY.LETTER_WEIGHTS
-
-interface PresenceState {
-  user_id: string
-  online_at: string
-}
 
 interface GameOverInfo {
   winner: {
@@ -258,7 +253,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
   ]
   
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
-  const vowels = ['A', 'E', 'I', 'O', 'U']
+  const vowels = useMemo(() => ['A', 'E', 'I', 'O', 'U'], []);
   const consonants = alphabet.filter(letter => !vowels.includes(letter))
 
   // Initialize reducer with all state
@@ -292,19 +287,6 @@ export function GameClient({ lobbyId }: GameClientProps) {
   useEffect(() => {
     currentPlayersRef.current = gameState.players;
   }, [gameState.players]);
-
-  // Helper function to get initial banned letters
-  const getInitialBannedLetters = useCallback(() => {
-    // Randomly select 3 consonants
-    const shuffledConsonants = [...consonants].sort(() => Math.random() - 0.5);
-    const bannedConsonants = shuffledConsonants.slice(0, 3);
-    
-    // Randomly select 1 vowel
-    const shuffledVowels = [...vowels].sort(() => Math.random() - 0.5);
-    const bannedVowel = shuffledVowels[0];
-    
-    return [...bannedConsonants, bannedVowel];
-  }, [consonants, vowels]);
 
   // Helper function to get next banned letter
   const getNextBannedLetter = (currentBannedLetters: string[]) => {
@@ -352,7 +334,178 @@ export function GameClient({ lobbyId }: GameClientProps) {
     })
   }, [gameState.words])
 
-  // Set up timer animation
+  // Wrap handleTimerEnd in useCallback
+  const handleTimerEnd = useCallback(async () => {
+    console.log('Timer ended, attempting to update game state...');
+    try {
+      // First check if game is already finished
+      const { data: currentState } = await supabase
+        .from('game_state')
+        .select('status, elo_updated')
+        .eq('lobby_id', lobbyId)
+        .single();
+
+      if (currentState?.status === 'finished') {
+        console.log('Game already finished, skipping timer end logic');
+        return;
+      }
+
+      // Set up initial game over state before making any updates
+      const winner = gameState.player1Time <= 0 ? gameState.players[1] : gameState.players[0];
+      const loser = gameState.player1Time <= 0 ? gameState.players[0] : gameState.players[1];
+
+      if (winner && loser) {
+        gameEndStateRef.current = {
+          players: gameState.players,
+          gameOverInfo: {
+            winner: {
+              id: winner.id,
+              name: winner.name,
+              elo: winner.elo,
+              originalElo: winner.elo,
+              avatar_url: winner.avatar_url,
+              score: winner.score
+            },
+            loser: {
+              id: loser.id,
+              name: loser.name,
+              elo: loser.elo,
+              originalElo: loser.elo,
+              avatar_url: loser.avatar_url,
+              score: loser.score
+            },
+            reason: 'time'
+          }
+        };
+
+        // Update game state to show modal immediately
+        dispatch({ type: 'SET_GAME_OVER', payload: { 
+          winner: {
+            id: winner.id,
+            name: winner.name,
+            avatar_url: winner.avatar_url,
+            elo: winner.elo,
+            score: winner.score,
+            games_played: 0
+          },
+          loser: {
+            id: loser.id,
+            name: loser.name,
+            avatar_url: loser.avatar_url,
+            elo: loser.elo,
+            score: loser.score,
+            games_played: 0
+          }
+        }});
+      }
+
+      // Make an atomic update to set the game status to finished
+      const { error } = await supabase
+        .from('game_state')
+        .update({
+          status: 'finished',
+          end_reason: 'time',
+          updated_by: user?.id
+        })
+        .match({ lobby_id: lobbyId, status: 'active' });
+
+      if (error) {
+        console.error('Error updating game status:', error);
+        showToast('Error ending game', 'error');
+        return;
+      }
+
+      // Get the access token from the current session
+      const { data: { session } } = await supabase.auth.getSession();
+      const accessToken = session?.access_token;
+
+      if (!accessToken) {
+        console.error('No access token available');
+        showToast('Error updating ELO ratings', 'error');
+        return;
+      }
+
+      // Call the Edge Function with proper authorization
+      const response = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/handle_game_end`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          lobby_id: lobbyId,
+          game_status: 'finished',
+          reason: 'time'
+        })
+      });
+
+      const responseText = await response.text();
+      console.log('Edge Function response:', {
+        status: response.status,
+        statusText: response.statusText,
+        body: responseText
+      });
+
+      if (!response.ok) {
+        console.error('Error from handle_game_end function:', {
+          status: response.status,
+          statusText: response.statusText,
+          body: responseText
+        });
+        showToast('Error updating ELO ratings', 'error');
+        return;
+      }
+
+      const result = JSON.parse(responseText);
+      console.log('Successfully called handle_game_end function:', result);
+
+      // Update game over state with ELO changes
+      if (gameEndStateRef.current.gameOverInfo) {
+        const winner = gameEndStateRef.current.gameOverInfo.winner;
+        const loser = gameEndStateRef.current.gameOverInfo.loser;
+
+        // Update winner and loser ELO values
+        if (winner.id === result.winner.id) {
+          gameEndStateRef.current.gameOverInfo.winner.originalElo = result.winner.oldElo;
+          gameEndStateRef.current.gameOverInfo.winner.elo = result.winner.newElo;
+          gameEndStateRef.current.gameOverInfo.loser.originalElo = result.loser.oldElo;
+          gameEndStateRef.current.gameOverInfo.loser.elo = result.loser.newElo;
+        } else {
+          gameEndStateRef.current.gameOverInfo.winner.originalElo = result.loser.oldElo;
+          gameEndStateRef.current.gameOverInfo.winner.elo = result.loser.newElo;
+          gameEndStateRef.current.gameOverInfo.loser.originalElo = result.winner.oldElo;
+          gameEndStateRef.current.gameOverInfo.loser.elo = result.winner.newElo;
+        }
+
+        // Force a re-render with the new game over state
+        dispatch({ type: 'SET_GAME_OVER', payload: { 
+          winner: {
+            id: winner.id,
+            name: winner.name,
+            avatar_url: winner.avatar_url,
+            elo: result.winner.newElo,
+            score: winner.score,
+            games_played: 0
+          },
+          loser: {
+            id: loser.id,
+            name: loser.name,
+            avatar_url: loser.avatar_url,
+            elo: result.loser.newElo,
+            score: loser.score,
+            games_played: 0
+          }
+        }});
+      }
+
+      showToast('Game Over!', 'info');
+
+    } catch (error) {
+      console.error('Error in handleTimerEnd:', error);
+      showToast('Error ending game', 'error');
+    }
+  }, [gameState.player1Time, gameState.players, lobbyId, user?.id, showToast, dispatch]);
+
   useEffect(() => {
     if (!user || !gameState.players.length || !gameState.words) return;
 
@@ -412,7 +565,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
     return () => {
       cleanupPromise.then(cleanup => cleanup?.());
     };
-  }, [user, gameState.players, gameState.words, lobbyId]);
+  }, [user, gameState.players, gameState.words, lobbyId, handleTimerEnd]);
 
   // Fetch initial game state and words
   useEffect(() => {
@@ -1091,7 +1244,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
         });
       }
     };
-  }, [lobbyId, user]);
+  }, [lobbyId, user, gameState.onlinePlayers, gameState.players, showToast]);
 
   // Basic word submission handler
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1267,242 +1420,10 @@ export function GameClient({ lobbyId }: GameClientProps) {
   // Compute online status in render instead of state
   const getPlayerOnlineStatus = (playerId: string) => gameState.onlinePlayers.has(playerId)
 
-  // For now, keep the loading state return
-  if (!user) {
-    return (
-      <PageTransition>
-        <main className="min-h-screen flex items-center justify-center">
-          <div className="flex flex-col items-center gap-4">
-            <div className="w-12 h-12 border-4 border-purple-500/50 border-t-purple-500 rounded-full animate-spin" />
-            <p className="text-white/70">Loading game...</p>
-          </div>
-        </main>
-      </PageTransition>
-    )
-  }
-
-  // Update the handleTimerEnd function
-  const handleTimerEnd = async () => {
-    console.log('Timer ended, attempting to update game state...');
-    try {
-      // First check if game is already finished
-      const { data: currentState } = await supabase
-        .from('game_state')
-        .select('status, elo_updated')
-        .eq('lobby_id', lobbyId)
-        .single();
-
-      if (currentState?.status === 'finished') {
-        console.log('Game already finished, skipping timer end logic');
-        return;
-      }
-
-      // Set up initial game over state before making any updates
-      const winner = gameState.player1Time <= 0 ? gameState.players[1] : gameState.players[0];
-      const loser = gameState.player1Time <= 0 ? gameState.players[0] : gameState.players[1];
-
-      if (winner && loser) {
-        gameEndStateRef.current = {
-          players: gameState.players,
-          gameOverInfo: {
-            winner: {
-              id: winner.id,
-              name: winner.name,
-              elo: winner.elo,
-              originalElo: winner.elo,
-              avatar_url: winner.avatar_url,
-              score: winner.score
-            },
-            loser: {
-              id: loser.id,
-              name: loser.name,
-              elo: loser.elo,
-              originalElo: loser.elo,
-              avatar_url: loser.avatar_url,
-              score: loser.score
-            },
-            reason: 'time'
-          }
-        };
-
-        // Update game state to show modal immediately
-        dispatch({ type: 'SET_GAME_OVER', payload: { 
-          winner: {
-            id: winner.id,
-            name: winner.name,
-            avatar_url: winner.avatar_url,
-            elo: winner.elo,
-            score: winner.score,
-            games_played: 0
-          },
-          loser: {
-            id: loser.id,
-            name: loser.name,
-            avatar_url: loser.avatar_url,
-            elo: loser.elo,
-            score: loser.score,
-            games_played: 0
-          }
-        }});
-      }
-
-      // Make an atomic update to set the game status to finished
-      const { error } = await supabase
-        .from('game_state')
-        .update({
-          status: 'finished',
-          end_reason: 'time',
-          updated_by: user?.id
-        })
-        .match({ lobby_id: lobbyId, status: 'active' });
-
-      if (error) {
-        console.error('Error updating game status:', error);
-        showToast('Error ending game', 'error');
-        return;
-      }
-
-      // Get the access token from the current session
-      const { data: { session } } = await supabase.auth.getSession();
-      const accessToken = session?.access_token;
-
-      if (!accessToken) {
-        console.error('No access token available');
-        showToast('Error updating ELO ratings', 'error');
-        return;
-      }
-
-      // Call the Edge Function with proper authorization
-      const response = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/handle_game_end`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({
-          lobby_id: lobbyId,
-          game_status: 'finished',
-          reason: 'time'
-        })
-      });
-
-      const responseText = await response.text();
-      console.log('Edge Function response:', {
-        status: response.status,
-        statusText: response.statusText,
-        body: responseText
-      });
-
-      if (!response.ok) {
-        console.error('Error from handle_game_end function:', {
-          status: response.status,
-          statusText: response.statusText,
-          body: responseText
-        });
-        showToast('Error updating ELO ratings', 'error');
-        return;
-      }
-
-      const result = JSON.parse(responseText);
-      console.log('Successfully called handle_game_end function:', result);
-
-      // Update game over state with ELO changes
-      if (gameEndStateRef.current.gameOverInfo) {
-        const winner = gameEndStateRef.current.gameOverInfo.winner;
-        const loser = gameEndStateRef.current.gameOverInfo.loser;
-
-        // Update winner and loser ELO values
-        if (winner.id === result.winner.id) {
-          gameEndStateRef.current.gameOverInfo.winner.originalElo = result.winner.oldElo;
-          gameEndStateRef.current.gameOverInfo.winner.elo = result.winner.newElo;
-          gameEndStateRef.current.gameOverInfo.loser.originalElo = result.loser.oldElo;
-          gameEndStateRef.current.gameOverInfo.loser.elo = result.loser.newElo;
-        } else {
-          gameEndStateRef.current.gameOverInfo.winner.originalElo = result.loser.oldElo;
-          gameEndStateRef.current.gameOverInfo.winner.elo = result.loser.newElo;
-          gameEndStateRef.current.gameOverInfo.loser.originalElo = result.winner.oldElo;
-          gameEndStateRef.current.gameOverInfo.loser.elo = result.winner.newElo;
-        }
-
-        // Force a re-render with the new game over state
-        dispatch({ type: 'SET_GAME_OVER', payload: { 
-          winner: {
-            id: winner.id,
-            name: winner.name,
-            avatar_url: winner.avatar_url,
-            elo: result.winner.newElo,
-            score: winner.score,
-            games_played: 0
-          },
-          loser: {
-            id: loser.id,
-            name: loser.name,
-            avatar_url: loser.avatar_url,
-            elo: result.loser.newElo,
-            score: loser.score,
-            games_played: 0
-          }
-        }});
-      }
-
-      showToast('Game Over!', 'info');
-
-    } catch (error) {
-      console.error('Error in handleTimerEnd:', error);
-      showToast('Error ending game', 'error');
-    }
-  };
-
   // Remove references to expandDirection
-  const handleWordSubmit = (word: string) => {
-    // Handle word submission without expandDirection
-    dispatch({ type: 'SET_WORD', payload: word });
-  };
-
-  // Remove references to gameStarted
   const isGameActive = gameState.words.length > 0;
 
-  // Simplify forfeit handler to just update game state
-  const handleForfeit = async () => {
-    try {
-      console.log('Starting forfeit process...');
-      
-      // First check if game is already finished
-      const { data: currentState } = await supabase
-        .from('game_state')
-        .select('status')
-        .eq('lobby_id', lobbyId)
-        .single();
-
-      if (currentState?.status === 'finished') {
-        console.log('Game already finished, skipping forfeit logic');
-        return;
-      }
-
-      // Just update the game state and let the subscription handler do the rest
-      const { error } = await supabase
-        .from('game_state')
-        .update({
-          status: 'finished',
-          end_reason: 'forfeit',
-          updated_by: user?.id
-        })
-        .match({ lobby_id: lobbyId, status: 'active' });
-
-      if (error) {
-        console.error('Error updating game status:', error);
-        showToast('Error forfeiting game', 'error');
-        return;
-      }
-
-      // Redirect immediately
-      router.push('/');
-    } catch (error) {
-      console.error('Error in handleForfeit:', error);
-      showToast('Failed to forfeit game', 'error');
-    }
-  };
-
+  // Remove references to gameStarted
   return (
     <PageTransition>
       <main className="min-h-screen">

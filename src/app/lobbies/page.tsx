@@ -11,7 +11,6 @@ import { useToast } from '@/lib/context/toast'
 import { PageTransition } from '@/components/layout/PageTransition'
 import { Plus, Users, Clock, Lock, LogOut, ArrowLeft, Play, Timer } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
-import { format } from 'timeago.js'
 
 interface Lobby {
   id: string

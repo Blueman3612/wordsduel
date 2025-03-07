@@ -1,6 +1,6 @@
 import { createBrowserClient } from '@supabase/ssr'
 import { create } from 'zustand'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import type { RealtimeChannelOptions, REALTIME_SUBSCRIBE_STATES } from '@supabase/supabase-js'
 
 // Store for API metrics
 interface MetricsStore {
@@ -51,15 +51,15 @@ supabase.from = (table: string) => {
 }
 
 const originalChannel = supabase.channel.bind(supabase)
-supabase.channel = (name: string, opts?: any) => {
+supabase.channel = (name: string, opts?: RealtimeChannelOptions) => {
   const channel = originalChannel(name, opts)
   const originalSubscribe = channel.subscribe.bind(channel)
   
-  channel.subscribe = (callback?: any) => {
+  channel.subscribe = (callback?: (status: REALTIME_SUBSCRIBE_STATES, err?: Error) => void) => {
     useMetricsStore.getState().incrementRealtime()
     return originalSubscribe(callback)
   }
-  
+
   return channel
 }
 
