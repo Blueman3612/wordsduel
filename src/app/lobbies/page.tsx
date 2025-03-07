@@ -334,6 +334,16 @@ export default function LobbiesPage() {
 
         if (lobbyError) throw lobbyError
 
+        // Get player profiles
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, display_name, avatar_url, elo')
+          .in('id', [lobbyData.host_id, user.id]);
+
+        if (!profiles || profiles.length !== 2) {
+          throw new Error('Could not fetch player profiles');
+        }
+
         const baseTime = lobbyData.game_config.base_time || 180000 // 3 minutes in ms
 
         // Get initial banned letters
@@ -368,7 +378,15 @@ export default function LobbiesPage() {
             banned_letters: initialBannedLetters,
             last_move_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
-            updated_by: lobbyData.host_id // Use host's ID as they created the lobby
+            updated_by: lobbyData.host_id, // Use host's ID as they created the lobby
+            players: profiles.map(p => ({
+              id: p.id,
+              name: p.display_name,
+              avatar_url: p.avatar_url,
+              elo: p.elo,
+              score: 0,
+              games_played: 0
+            }))
           })
 
         if (stateError) throw stateError
@@ -439,7 +457,86 @@ export default function LobbiesPage() {
     if (!user) return
 
     try {
-      // First delete all lobby members
+      // Check if game state exists and if any words have been played
+      const { data: gameState, error: gameError } = await supabase
+        .from('game_state')
+        .select('status')
+        .eq('lobby_id', lobbyId)
+        .maybeSingle()
+
+      // If there's no game state (error or null), just delete the lobby
+      if (gameError || !gameState) {
+        // Delete all lobby members
+        const { error: membersError } = await supabase
+          .from('lobby_members')
+          .delete()
+          .eq('lobby_id', lobbyId)
+
+        if (membersError) throw membersError
+
+        // Then delete the lobby
+        const { error: lobbyError } = await supabase
+          .from('lobbies')
+          .delete()
+          .eq('id', lobbyId)
+          .eq('host_id', user.id)
+
+        if (lobbyError) throw lobbyError
+
+        showToast('Left lobby successfully', 'success')
+        router.push('/lobbies')
+        return
+      }
+
+      // If game is active, check if any words have been played
+      if (gameState.status === 'active') {
+        const { count: wordsCount, error: wordsError } = await supabase
+          .from('game_words')
+          .select('*', { count: 'exact', head: true })
+          .eq('lobby_id', lobbyId)
+
+        if (wordsError) throw wordsError
+
+        // If words have been played, handle as forfeit
+        if (wordsCount && wordsCount > 0) {
+          // Update game state to finished with forfeit
+          const { error: updateError } = await supabase
+            .from('game_state')
+            .update({
+              status: 'finished',
+              end_reason: 'forfeit'
+            })
+            .eq('lobby_id', lobbyId)
+
+          if (updateError) throw updateError
+
+          // Remove the player from lobby_members
+          const { error: leaveError } = await supabase
+            .from('lobby_members')
+            .delete()
+            .eq('lobby_id', lobbyId)
+            .eq('user_id', user.id)
+
+          if (leaveError) throw leaveError
+
+          showToast('Game forfeited', 'info')
+          router.push('/lobbies')
+          return
+        }
+
+        // If no words played, handle as early leave
+        const { error: updateError } = await supabase
+          .from('game_state')
+          .update({
+            status: 'finished',
+            end_reason: 'abandoned'
+          })
+          .eq('lobby_id', lobbyId)
+
+        if (updateError) throw updateError
+      }
+
+      // Delete all lobby members
       const { error: membersError } = await supabase
         .from('lobby_members')
         .delete()
@@ -452,15 +549,15 @@ export default function LobbiesPage() {
         .from('lobbies')
         .delete()
         .eq('id', lobbyId)
-        .eq('host_id', user.id) // Extra safety check
+        .eq('host_id', user.id)
 
       if (lobbyError) throw lobbyError
 
-      showToast('Lobby deleted successfully', 'success')
-      fetchLobbies()
+      showToast('Left lobby successfully', 'success')
+      router.push('/lobbies')
     } catch (error) {
-      console.error('Error deleting lobby:', error)
-      showToast('Failed to delete lobby', 'error')
+      console.error('Error leaving/deleting lobby:', error)
+      showToast('Failed to leave lobby', 'error')
     }
   }
 
@@ -468,16 +565,74 @@ export default function LobbiesPage() {
     if (!user) return
 
     try {
-      const { error } = await supabase
+      // Check if game state exists and if any words have been played
+      const { data: gameState, error: gameError } = await supabase
+        .from('game_state')
+        .select('status')
+        .eq('lobby_id', lobbyId)
+        .maybeSingle()
+
+      if (gameError) throw gameError
+
+      // If game is active, check if any words have been played
+      if (gameState?.status === 'active') {
+        const { count: wordsCount, error: wordsError } = await supabase
+          .from('game_words')
+          .select('*', { count: 'exact', head: true })
+          .eq('lobby_id', lobbyId)
+
+        if (wordsError) throw wordsError
+
+        // If words have been played, handle as forfeit
+        if (wordsCount && wordsCount > 0) {
+          // Update game state to finished with forfeit
+          const { error: updateError } = await supabase
+            .from('game_state')
+            .update({
+              status: 'finished',
+              end_reason: 'forfeit'
+            })
+            .eq('lobby_id', lobbyId)
+
+          if (updateError) throw updateError
+
+          // Remove the player from lobby_members
+          const { error: leaveError } = await supabase
+            .from('lobby_members')
+            .delete()
+            .eq('lobby_id', lobbyId)
+            .eq('user_id', user.id)
+
+          if (leaveError) throw leaveError
+
+          showToast('Game forfeited', 'info')
+          router.push('/lobbies')
+          return
+        }
+
+        // If no words played, handle as early leave
+        const { error: updateError } = await supabase
+          .from('game_state')
+          .update({
+            status: 'finished',
+            end_reason: 'abandoned'
+          })
+          .eq('lobby_id', lobbyId)
+
+        if (updateError) throw updateError
+      }
+
+      // Remove the player from lobby_members
+      const { error: leaveError } = await supabase
         .from('lobby_members')
         .delete()
         .eq('lobby_id', lobbyId)
         .eq('user_id', user.id)
 
-      if (error) throw error
+      if (leaveError) throw leaveError
 
       showToast('Left lobby successfully', 'success')
-      fetchLobbies()
+      router.push('/lobbies')
     } catch (error) {
       console.error('Error leaving lobby:', error)
       showToast('Failed to leave lobby', 'error')

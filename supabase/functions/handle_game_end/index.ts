@@ -60,41 +60,45 @@ Deno.serve(async (req) => {
     // Get game state and check if it exists
     const { data: gameState, error: gameStateError } = await supabaseClient
       .from('game_state')
-      .select('*')
+      .select('*, players')
       .eq('lobby_id', lobby_id)
       .single()
 
     console.log('Game state query result:', { 
       hasData: !!gameState, 
       error: gameStateError?.message,
-      lobbyId: lobby_id 
+      lobbyId: lobby_id,
+      players: gameState?.players
     })
 
-    if (gameStateError || !gameState) {
-      throw new Error(`Failed to fetch game state: ${gameStateError?.message || 'No game state found'}`)
+    if (gameStateError || !gameState || !gameState.players || gameState.players.length !== 2) {
+      throw new Error(`Failed to fetch game state: ${gameStateError?.message || 'Invalid game state or players'}`)
     }
 
-    // Get lobby members in join order
-    const { data: lobbyMembers, error: lobbyError } = await supabaseClient
-      .from('lobby_members')
-      .select('user_id')
-      .eq('lobby_id', lobby_id)
-      .order('joined_at', { ascending: true })
-      .limit(2)
+    // Use players from game state instead of lobby members
+    const players = gameState.players;
+    console.log('Using players from game state:', players)
 
-    if (lobbyError || !lobbyMembers || lobbyMembers.length !== 2) {
-      throw new Error(`Failed to fetch lobby members: ${lobbyError?.message}`)
+    // Determine winner/loser based on reason
+    let winnerId, loserId;
+    if (reason === 'time') {
+      winnerId = gameState.player1_time <= 0 
+        ? players[1].id
+        : players[0].id;
+      loserId = gameState.player1_time <= 0 
+        ? players[0].id
+        : players[1].id;
+    } else if (reason === 'forfeit') {
+      // In case of forfeit, the updated_by field indicates who forfeited
+      winnerId = players.find(p => p.id !== gameState.updated_by)?.id;
+      loserId = players.find(p => p.id === gameState.updated_by)?.id;
     }
 
-    // Determine winner/loser based on time
-    const winnerId = gameState.player1_time <= 0 
-      ? lobbyMembers[1].user_id 
-      : lobbyMembers[0].user_id
-    const loserId = gameState.player1_time <= 0 
-      ? lobbyMembers[0].user_id 
-      : lobbyMembers[1].user_id
+    if (!winnerId || !loserId) {
+      throw new Error('Failed to determine winner/loser');
+    }
 
-    console.log('Determined winner/loser:', { winnerId, loserId })
+    console.log('Determined winner/loser:', { winnerId, loserId, reason })
 
     // Get current ELO ratings
     const { data: profiles, error: profilesError } = await supabaseClient

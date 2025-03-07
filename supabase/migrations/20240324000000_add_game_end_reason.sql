@@ -1,16 +1,7 @@
--- Add elo_updated column to game_state table
-ALTER TABLE game_state ADD COLUMN IF NOT EXISTS elo_updated BOOLEAN DEFAULT false;
+-- Add end_reason column to game_state table
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS end_reason TEXT;
 
--- Create RLS policy for game state access
-CREATE POLICY "Enable read access for authenticated users" ON "public"."game_state"
-    FOR SELECT
-    TO public
-    USING (auth.uid() IN (
-        SELECT user_id 
-        FROM lobby_members 
-        WHERE lobby_id = game_state.lobby_id
-    ));
-
+-- Update existing functions to handle end_reason
 CREATE OR REPLACE FUNCTION handle_game_end(
   p_lobby_id UUID,
   p_game_status TEXT,
@@ -104,13 +95,14 @@ BEGIN
     games_played = games_played + 1
   WHERE id IN (v_winner_id, v_loser_id);
 
-  -- Update game state to mark ELO as updated
+  -- Update game state to mark ELO as updated and set end_reason
   UPDATE game_state
   SET 
     status = p_game_status,
+    end_reason = p_reason,
     elo_updated = true,
     updated_at = NOW()
   WHERE lobby_id = p_lobby_id;
 
 END;
-$$;
+$$; 

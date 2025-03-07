@@ -33,6 +33,7 @@ interface GameState {
   updated_by: string
   elo_updated?: boolean
   players?: Player[]
+  end_reason?: 'time' | 'forfeit'
 }
 
 interface GameWord {
@@ -746,10 +747,49 @@ export function GameClient({ lobbyId }: GameClientProps) {
               filter: `lobby_id=eq.${lobbyId}`
             },
             async (payload: RealtimePostgresChangesPayload<GameState>) => {
+              console.log('Game state subscription triggered:', payload);
+              
               const newState = payload.new as GameState;
+              const oldState = payload.old as GameState;
               if (!newState) return;
 
-              console.log('Received game state update:', newState);
+              console.log('Received game state update:', {
+                newState,
+                oldState,
+                currentUser: user?.id,
+                conditions: {
+                  isFinished: newState.status === 'finished',
+                  eloNotUpdated: !newState.elo_updated,
+                  noGameOverInfo: !gameEndStateRef.current.gameOverInfo,
+                  wasActive: oldState?.status === 'active' || !oldState?.status,
+                  isForfeit: newState.end_reason === 'forfeit',
+                  updatedBy: newState.updated_by,
+                  hasPlayers: !!newState.players,
+                  gameEndRef: gameEndStateRef.current
+                }
+              });
+
+              // If players is null, update it with current players
+              if (!newState.players && gameState.players.length > 0) {
+                console.log('Players is null, updating with:', gameState.players);
+                const { error: updateError } = await supabase
+                  .from('game_state')
+                  .update({
+                    players: gameState.players.map(p => ({
+                      id: p.id,
+                      name: p.name,
+                      avatar_url: p.avatar_url,
+                      elo: p.elo,
+                      score: p.score,
+                      games_played: 0
+                    }))
+                  })
+                  .eq('lobby_id', lobbyId);
+
+                if (updateError) {
+                  console.error('Error updating players:', updateError);
+                }
+              }
 
               // Only process if this is a new state change
               if (payload.eventType === 'UPDATE') {
@@ -766,110 +806,203 @@ export function GameClient({ lobbyId }: GameClientProps) {
                   }
                 });
 
-                // Only proceed with game over setup if:
-                // 1. This is a new game finish (status just changed to finished)
-                // 2. ELO is not yet updated
-                // 3. We don't already have game over info
+                // Handle game end conditions - modified to be more lenient with oldState
                 if (
                   newState.status === 'finished' && 
                   !newState.elo_updated && 
                   !gameEndStateRef.current.gameOverInfo &&
-                  payload.old?.status === 'active' // Ensure this is a new finish
+                  (!oldState?.status || oldState.status === 'active')
                 ) {
-                  console.log('Game just finished, setting up initial game over state...');
-                  
-                  const setupGameOver = async () => {
-                    try {
-                      // First get lobby members in join order
-                      const { data: membersData, error: membersError } = await supabase
-                        .from('lobby_members')
-                        .select('user_id, joined_at')
-                        .eq('lobby_id', lobbyId)
-                        .order('joined_at', { ascending: true });
+                  console.log('Game end detected, checking player information...', {
+                    currentPlayers: gameState.players,
+                    currentPlayersRef: currentPlayersRef.current,
+                    newState
+                  });
 
-                      if (membersError) {
-                        console.error('Error fetching lobby members:', membersError);
-                        return;
-                      }
+                  // Always fetch fresh player data on game end
+                  const { data: membersData } = await supabase
+                    .from('lobby_members')
+                    .select('user_id, joined_at')
+                    .eq('lobby_id', lobbyId)
+                    .order('joined_at', { ascending: true });
 
-                      if (!membersData?.length) {
-                        console.error('No members found in lobby');
-                        return;
-                      }
+                  if (membersData && membersData.length >= 2) {
+                    console.log('Found lobby members:', membersData);
+                    
+                    const { data: profilesData } = await supabase
+                      .from('profiles')
+                      .select('id, display_name, avatar_url, elo')
+                      .in('id', membersData.map(m => m.user_id));
 
-                      // Get profiles for all members with initial ELO
-                      const { data: profilesData, error: profilesError } = await supabase
-                        .from('profiles')
-                        .select('id, display_name, avatar_url, elo')
-                        .in('id', membersData.map(m => m.user_id));
-
-                      if (profilesError) {
-                        console.error('Error fetching profiles:', profilesError);
-                        return;
-                      }
-
-                      // Transform profiles into Player objects
-                      const players = profilesData?.map((profile, index) => ({
-                        id: profile.id,
-                        name: profile.display_name,
-                        elo: profile.elo,
-                        score: index === 0 ? newState.player1_score : newState.player2_score,
-                        avatar_url: profile.avatar_url,
-                        originalElo: profile.elo,
-                        games_played: 0
-                      })) || [];
+                    if (profilesData && profilesData.length >= 2) {
+                      console.log('Found player profiles:', profilesData);
+                      
+                      // Map players in the correct order based on join time
+                      const players = membersData.map((member, index) => {
+                        const profile = profilesData.find(p => p.id === member.user_id);
+                        if (!profile) {
+                          console.error('Could not find profile for member:', member);
+                          return null;
+                        }
+                        return {
+                          id: profile.id,
+                          name: profile.display_name,
+                          avatar_url: profile.avatar_url,
+                          elo: profile.elo,
+                          score: index === 0 ? newState.player1_score : newState.player2_score,
+                          games_played: 0
+                        };
+                      }).filter(Boolean) as Player[];
 
                       if (players.length >= 2) {
-                        const player1 = players[0];
-                        const player2 = players[1];
+                        console.log('Setting up players for game end:', players);
+                        
+                        // Update both refs
+                        dispatch({ type: 'SET_PLAYERS', payload: players });
+                        currentPlayersRef.current = players;
 
-                        if (player1 && player2) {
-                          console.log('Setting up game over info with players:', players);
-                          // Determine winner and loser based on time
-                          const winner = newState.player1_time <= 0 ? player2 : player1;
-                          const loser = newState.player1_time <= 0 ? player1 : player2;
+                        // Set up game end state
+                        const winner = newState.end_reason === 'forfeit'
+                          ? players.find(p => p.id === newState.updated_by)!  // Non-forfeiter is winner
+                          : players[newState.player1_time <= 0 ? 1 : 0];
+                          
+                        const loser = newState.end_reason === 'forfeit'
+                          ? players.find(p => p.id !== newState.updated_by)!  // Forfeiter is loser
+                          : players[newState.player1_time <= 0 ? 0 : 1];
 
-                          // Set initial game over info
-                          gameEndStateRef.current = {
-                            players: players,
-                            gameOverInfo: {
-                              winner: {
-                                id: winner.id,
-                                name: winner.name,
-                                elo: winner.elo,
-                                originalElo: winner.originalElo,
-                                avatar_url: winner.avatar_url,
-                                score: winner === player1 ? newState.player1_score : newState.player2_score
+                        console.log('Setting up game end state:', {
+                          winner: winner.name,
+                          loser: loser.name,
+                          reason: newState.end_reason,
+                          updatedBy: newState.updated_by,
+                          currentUser: user?.id,
+                          isForfeiter: newState.end_reason === 'forfeit' && user?.id !== newState.updated_by
+                        });
+
+                        gameEndStateRef.current = {
+                          players,
+                          gameOverInfo: {
+                            winner: {
+                              id: winner.id,
+                              name: winner.name,
+                              elo: winner.elo,
+                              originalElo: winner.elo,
+                              avatar_url: winner.avatar_url,
+                              score: winner.score
+                            },
+                            loser: {
+                              id: loser.id,
+                              name: loser.name,
+                              elo: loser.elo,
+                              originalElo: loser.elo,
+                              avatar_url: loser.avatar_url,
+                              score: loser.score
+                            },
+                            reason: newState.end_reason
+                          }
+                        };
+
+                        // Force a re-render to show the game over modal
+                        dispatch({ type: 'SET_GAME_OVER', payload: { winner, loser } });
+
+                        // Now that we have player information, handle the game end
+                        const isForfeiter = newState.end_reason === 'forfeit' && user?.id !== newState.updated_by;
+                        const shouldHandleGameEnd = newState.end_reason === 'forfeit' 
+                          ? !isForfeiter  // Only non-forfeiter should handle game end
+                          : true;  // For timeouts, either player can handle it
+
+                        console.log('Game end handling decision:', {
+                          isForfeiter,
+                          shouldHandleGameEnd,
+                          currentUser: user?.id,
+                          updatedBy: newState.updated_by,
+                          reason: newState.end_reason
+                        });
+
+                        if (shouldHandleGameEnd) {
+                          console.log('Handling game end...');
+                          const { data: { session } } = await supabase.auth.getSession();
+                          const accessToken = session?.access_token;
+
+                          if (accessToken) {
+                            const response = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/handle_game_end`, {
+                              method: 'POST',
+                              headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${accessToken}`
                               },
-                              loser: {
-                                id: loser.id,
-                                name: loser.name,
-                                elo: loser.elo,
-                                originalElo: loser.elo,
-                                avatar_url: loser.avatar_url,
-                                score: loser === player1 ? newState.player1_score : newState.player2_score
-                              },
-                              reason: 'time'
+                              body: JSON.stringify({
+                                lobby_id: lobbyId,
+                                game_status: 'finished',
+                                reason: newState.end_reason
+                              })
+                            });
+
+                            if (!response.ok) {
+                              console.error('Error from handle_game_end function:', {
+                                status: response.status,
+                                statusText: response.statusText,
+                                body: await response.text()
+                              });
+                              showToast('Error updating ELO ratings', 'error');
+                              return;
                             }
-                          };
+
+                            const result = JSON.parse(await response.text());
+                            console.log('Successfully called handle_game_end function:', result);
+
+                            // Update game over state with ELO changes
+                            if (gameEndStateRef.current.gameOverInfo) {
+                              const winner = gameEndStateRef.current.gameOverInfo.winner;
+                              const loser = gameEndStateRef.current.gameOverInfo.loser;
+
+                              // Update winner and loser ELO values
+                              if (winner.id === result.winner.id) {
+                                gameEndStateRef.current.gameOverInfo.winner.originalElo = result.winner.oldElo;
+                                gameEndStateRef.current.gameOverInfo.winner.elo = result.winner.newElo;
+                                gameEndStateRef.current.gameOverInfo.loser.originalElo = result.loser.oldElo;
+                                gameEndStateRef.current.gameOverInfo.loser.elo = result.loser.newElo;
+                              } else {
+                                gameEndStateRef.current.gameOverInfo.winner.originalElo = result.loser.oldElo;
+                                gameEndStateRef.current.gameOverInfo.winner.elo = result.loser.newElo;
+                                gameEndStateRef.current.gameOverInfo.loser.originalElo = result.winner.oldElo;
+                                gameEndStateRef.current.gameOverInfo.loser.elo = result.winner.newElo;
+                              }
+
+                              // Force a re-render with the new game over state
+                              dispatch({ type: 'SET_GAME_OVER', payload: { 
+                                winner: {
+                                  id: winner.id,
+                                  name: winner.name,
+                                  avatar_url: winner.avatar_url,
+                                  elo: result.winner.newElo,
+                                  score: winner.score,
+                                  games_played: 0
+                                },
+                                loser: {
+                                  id: loser.id,
+                                  name: loser.name,
+                                  avatar_url: loser.avatar_url,
+                                  elo: result.loser.newElo,
+                                  score: loser.score,
+                                  games_played: 0
+                                }
+                              }});
+                            }
+
+                            showToast('Game Over!', 'info');
+                          }
+                        } else {
+                          console.log('Skipping handle_game_end as forfeiter');
                         }
                       }
-                    } catch (error) {
-                      console.error('Error setting up game over:', error);
                     }
-                  };
-
-                  await setupGameOver();
+                  }
                 }
 
-                // Check for ELO updates separately
-                if (
-                  newState.status === 'finished' && 
-                  newState.elo_updated && 
-                  gameEndStateRef.current.gameOverInfo &&
-                  !payload.old?.elo_updated // Only process new ELO updates
-                ) {
-                  console.log('ELO just updated, fetching new values...');
+                // Handle ELO updates separately
+                if (newState.status === 'finished' && newState.elo_updated && gameEndStateRef.current.gameOverInfo) {
+                  console.log('ELO updated, fetching new values...');
                   
                   const winner = gameEndStateRef.current.gameOverInfo.winner;
                   const loser = gameEndStateRef.current.gameOverInfo.loser;
@@ -885,42 +1018,32 @@ export function GameClient({ lobbyId }: GameClientProps) {
                     const updatedLoser = updatedProfiles.find(p => p.id === loser.id);
 
                     if (updatedWinner && updatedLoser) {
-                      // Store original ELO values before updating
-                      if (!winner.originalElo) winner.originalElo = winner.elo;
-                      if (!loser.originalElo) loser.originalElo = loser.elo;
-
                       // Update game over info with new ELO values
                       gameEndStateRef.current = {
                         ...gameEndStateRef.current,
                         gameOverInfo: {
                           ...gameEndStateRef.current.gameOverInfo,
                           winner: {
-                            ...gameEndStateRef.current.gameOverInfo.winner,
+                            ...winner,
                             elo: updatedWinner.elo
                           },
                           loser: {
-                            ...gameEndStateRef.current.gameOverInfo.loser,
+                            ...loser,
                             elo: updatedLoser.elo
                           }
                         }
                       };
 
-                      // Force a re-render with the new game over state
+                      // Force a re-render
                       dispatch({ type: 'SET_GAME_OVER', payload: { 
                         winner: {
-                          id: winner.id,
-                          name: winner.name,
-                          avatar_url: winner.avatar_url,
+                          ...winner,
                           elo: updatedWinner.elo,
-                          score: winner.score,
                           games_played: 0
                         },
                         loser: {
-                          id: loser.id,
-                          name: loser.name,
-                          avatar_url: loser.avatar_url,
+                          ...loser,
                           elo: updatedLoser.elo,
-                          score: loser.score,
                           games_played: 0
                         }
                       }});
@@ -951,28 +1074,21 @@ export function GameClient({ lobbyId }: GameClientProps) {
     return () => {
       if (channel) {
         console.log('Cleaning up subscriptions and presence...');
-        // Remove presence before unsubscribing
-        (async () => {
-          try {
-            const { error } = await supabase.rpc('remove_lobby_presence', {
-              p_lobby_id: lobbyId,
-              p_user_id: user.id
-            });
-            
-            if (error) {
-              throw error;
-            }
-            
-            console.log('Presence removed successfully');
-            // Only unsubscribe after presence is removed
-            channel.unsubscribe();
-            console.log('Channel unsubscribed');
-          } catch (error) {
+        // First unsubscribe from the channel
+        channel.unsubscribe();
+        console.log('Channel unsubscribed');
+        
+        // Then remove presence
+        supabase.rpc('remove_lobby_presence', {
+          p_lobby_id: lobbyId,
+          p_user_id: user.id
+        }).then(({ error }) => {
+          if (error) {
             console.error('Error removing presence on cleanup:', error);
-            // Still try to unsubscribe even if presence removal fails
-            channel.unsubscribe();
+          } else {
+            console.log('Presence removed successfully');
           }
-        })();
+        });
       }
     };
   }, [lobbyId, user]);
@@ -1235,6 +1351,7 @@ export function GameClient({ lobbyId }: GameClientProps) {
         .from('game_state')
         .update({
           status: 'finished',
+          end_reason: 'time',
           updated_by: user?.id
         })
         .match({ lobby_id: lobbyId, status: 'active' });
@@ -1345,16 +1462,43 @@ export function GameClient({ lobbyId }: GameClientProps) {
   // Remove references to gameStarted
   const isGameActive = gameState.words.length > 0;
 
-  // Update forfeit handler
+  // Simplify forfeit handler to just update game state
   const handleForfeit = async () => {
     try {
-      await supabase.from('game_state').update({
-        status: 'finished',
-        updated_by: user?.id
-      }).eq('lobby_id', lobbyId);
+      console.log('Starting forfeit process...');
+      
+      // First check if game is already finished
+      const { data: currentState } = await supabase
+        .from('game_state')
+        .select('status')
+        .eq('lobby_id', lobbyId)
+        .single();
+
+      if (currentState?.status === 'finished') {
+        console.log('Game already finished, skipping forfeit logic');
+        return;
+      }
+
+      // Just update the game state and let the subscription handler do the rest
+      const { error } = await supabase
+        .from('game_state')
+        .update({
+          status: 'finished',
+          end_reason: 'forfeit',
+          updated_by: user?.id
+        })
+        .match({ lobby_id: lobbyId, status: 'active' });
+
+      if (error) {
+        console.error('Error updating game status:', error);
+        showToast('Error forfeiting game', 'error');
+        return;
+      }
+
+      // Redirect immediately
       router.push('/');
     } catch (error) {
-      console.error('Error forfeiting game:', error);
+      console.error('Error in handleForfeit:', error);
       showToast('Failed to forfeit game', 'error');
     }
   };
@@ -1610,7 +1754,6 @@ export function GameClient({ lobbyId }: GameClientProps) {
                             bg-white/20 backdrop-blur-xl rounded-2xl p-4 shadow-lg
                             transition-[width,opacity,grid-template-rows]
                             duration-150
-                            group-hover:duration-200
                             ease-out
                             overflow-hidden
                             w-full

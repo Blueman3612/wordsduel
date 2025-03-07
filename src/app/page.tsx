@@ -287,6 +287,16 @@ export default function HomePage() {
           const shuffledVowels: string[] = [...vowels].sort(() => Math.random() - 0.5)
           const initialBannedLetters = [...shuffledConsonants.slice(0, 3), shuffledVowels[0]]
 
+          // Get player profiles
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('id, display_name, avatar_url, elo')
+            .in('id', [availableLobby.host_id, user.id]);
+
+          if (!profiles || profiles.length !== 2) {
+            throw new Error('Could not fetch player profiles');
+          }
+
           // First update lobby status to in_progress to prevent subscription redirect
           const { error: updateError } = await supabase
             .from('lobbies')
@@ -309,7 +319,15 @@ export default function HomePage() {
               banned_letters: initialBannedLetters,
               last_move_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
-              updated_by: availableLobby.host_id
+              updated_by: availableLobby.host_id,
+              players: profiles.map(p => ({
+                id: p.id,
+                name: p.display_name,
+                avatar_url: p.avatar_url,
+                elo: p.elo,
+                score: 0,
+                games_played: 0
+              }))
             })
 
           if (stateError) throw stateError
